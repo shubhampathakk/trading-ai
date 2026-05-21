@@ -1,0 +1,27 @@
+# Secrets and configurations
+shubham_trading_agent/config.yaml
+shubham_trading_agent/.env
+shubham_trading_agent/rag_service.py
+shubham_trading_agent/test_order.py
+shubham_trading_agent/test_fno_order.py
+
+# Dashboard runtime status cache
+dashboard/bot_status.json
+
+# Persisted states and runtime artifacts
+shubham_trading_agent/state/
+shubham_trading_agent/output/
+shubham_trading_agent/news_cache/
+shubham_trading_agent/trade_bot/
+
+# Ngrok binaries
+shubham_trading_agent/ngrok
+mcp_helpers/ngrok
+
+# OS & IDE files
+.DS_Store
+*/.DS_Store
+.vscode/
+.idea/
+__pycache__/
+*.pyc

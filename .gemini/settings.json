@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "kite": {
+      "command": "npx",
+      "args": [
+        "--registry=https://registry.npmjs.org/",
+        "mcp-remote",
+        "https://mcp.kite.trade/mcp"
+      ]
+    }
+  }
+}
