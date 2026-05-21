@@ -173,7 +173,17 @@ class OptionSellingEngine:
 
             atm_strike = round(spot / 50.0) * 50
             step = 50.0
-            sl_mult = self.sl_multiplier if phase == "single" else 1.50
+
+            dte = (expiry - datetime.date.today()).days
+
+            # Widen the stop loss on 0-DTE to account for violent Gamma swings
+            if dte == 0:
+                base_sl_mult = self.sl_multiplier * 1.5 
+                logging.info(f"[OptionSelling] 0-DTE Expiry Day detected. Widening base SL multiplier to {base_sl_mult}")
+            else:
+                base_sl_mult = self.sl_multiplier
+
+            sl_mult = base_sl_mult if phase == "single" else (base_sl_mult * 1.20)
 
             ce_symbol = pe_symbol = ce_hedge_symbol = pe_hedge_symbol = None
             call_strike = put_strike = call_hedge_strike = put_hedge_strike = None
@@ -240,6 +250,22 @@ class OptionSellingEngine:
             ce_short_fill = pe_short_fill = 0.0
             if ce_symbol: ce_short_fill = await self._execute_leg(ce_symbol, qty, "SELL", is_paper)
             if pe_symbol:  pe_short_fill = await self._execute_leg(pe_symbol, qty, "SELL", is_paper)
+
+            # STRICT ROLLBACK: Verify no intended legs failed
+            failed_legs = []
+            if ce_symbol and ce_short_fill <= 0: failed_legs.append("CE_SHORT")
+            if pe_symbol and pe_short_fill <= 0: failed_legs.append("PE_SHORT")
+            if ce_hedge_symbol and ce_hedge_fill <= 0: failed_legs.append("CE_HEDGE")
+            if pe_hedge_symbol and pe_hedge_fill <= 0: failed_legs.append("PE_HEDGE")
+
+            if failed_legs:
+                logging.error(f"[OptionSelling] Execution failure on legs: {failed_legs}. Executing IMMEDIATE ROLLBACK to prevent skewed portfolio.")
+                # Rollback any legs that DID fill successfully
+                if ce_short_fill > 0: await self._execute_leg(ce_symbol, qty, "BUY", is_paper)
+                if pe_short_fill > 0: await self._execute_leg(pe_symbol, qty, "BUY", is_paper)
+                if ce_hedge_fill > 0: await self._execute_leg(ce_hedge_symbol, qty, "SELL", is_paper)
+                if pe_hedge_fill > 0: await self._execute_leg(pe_hedge_symbol, qty, "SELL", is_paper)
+                return
 
             # Calculate net credit premium received upfront
             short_premium = (ce_short_fill if ce_symbol else 0.0) + (pe_short_fill if pe_symbol else 0.0)
@@ -379,17 +405,33 @@ class OptionSellingEngine:
         qty = self.state["quantity"]
         net_credit = self.state["net_credit_received"]
 
-        # Fetch live LTPs of open legs
+        # Fetch live LTPs using a single batched API call to prevent desync and rate limits
         ce_ltp = pe_ltp = ce_hedge_ltp = pe_hedge_ltp = 0.0
-        
+        symbols_to_fetch = []
+
         if self.state.get("call_leg") and self.state["call_leg"]["status"] == "OPEN":
-            ce_ltp = safe_ltp(self.kite, f"NFO:{self.state['call_leg']['symbol']}") or 0.0
+            symbols_to_fetch.append(f"NFO:{self.state['call_leg']['symbol']}")
         if self.state.get("put_leg") and self.state["put_leg"]["status"] == "OPEN":
-            pe_ltp = safe_ltp(self.kite, f"NFO:{self.state['put_leg']['symbol']}") or 0.0
+            symbols_to_fetch.append(f"NFO:{self.state['put_leg']['symbol']}")
         if self.state.get("call_hedge") and self.state["call_hedge"]["status"] == "OPEN":
-            ce_hedge_ltp = safe_ltp(self.kite, f"NFO:{self.state['call_hedge']['symbol']}") or 0.0
+            symbols_to_fetch.append(f"NFO:{self.state['call_hedge']['symbol']}")
         if self.state.get("put_hedge") and self.state["put_hedge"]["status"] == "OPEN":
-            pe_hedge_ltp = safe_ltp(self.kite, f"NFO:{self.state['put_hedge']['symbol']}") or 0.0
+            symbols_to_fetch.append(f"NFO:{self.state['put_hedge']['symbol']}")
+
+        if symbols_to_fetch:
+            try:
+                ltp_dict = await asyncio.to_thread(self.kite.ltp, symbols_to_fetch)
+                
+                if self.state.get("call_leg") and self.state["call_leg"]["status"] == "OPEN":
+                    ce_ltp = float(ltp_dict.get(f"NFO:{self.state['call_leg']['symbol']}", {}).get("last_price", 0.0))
+                if self.state.get("put_leg") and self.state["put_leg"]["status"] == "OPEN":
+                    pe_ltp = float(ltp_dict.get(f"NFO:{self.state['put_leg']['symbol']}", {}).get("last_price", 0.0))
+                if self.state.get("call_hedge") and self.state["call_hedge"]["status"] == "OPEN":
+                    ce_hedge_ltp = float(ltp_dict.get(f"NFO:{self.state['call_hedge']['symbol']}", {}).get("last_price", 0.0))
+                if self.state.get("put_hedge") and self.state["put_hedge"]["status"] == "OPEN":
+                    pe_hedge_ltp = float(ltp_dict.get(f"NFO:{self.state['put_hedge']['symbol']}", {}).get("last_price", 0.0))
+            except Exception as e:
+                logging.warning(f"[OptionSelling] Batched LTP fetch failed: {e}")
 
         # Combined Current Value calculation
         # Spread Net Value = (Short Call LTP + Short Put LTP) - (Long Call LTP + Long Put LTP)
@@ -399,6 +441,7 @@ class OptionSellingEngine:
         # If entry premium was ₹100 and now is at or below ₹50, we book ₹50 profit!
         if current_value <= 0.5 * net_credit:
             logging.info(f"[OptionSelling] Combined premium profit target hit! Value ₹{current_value:.2f} <= 50% of Credit ₹{net_credit:.2f}. Booking profit.")
+            self.orchestrator.log_activity(f"🎯 Target hit! Premium value ₹{current_value:.2f} <= 50% of credit ₹{net_credit:.2f}.")
             await self._exit_strangle_fully(is_paper=is_paper, reason="PROFIT_TARGET_HIT")
             self.orchestrator.config["_single_strangle_done_today"] = datetime.date.today().isoformat()
             self._clear_state()
@@ -410,6 +453,7 @@ class OptionSellingEngine:
         sl_trigger = net_credit * self.sl_multiplier
         if current_value >= sl_trigger:
             logging.warning(f"[OptionSelling] Combined credit spread Stop Loss breached! Value ₹{current_value:.2f} >= Trigger ₹{sl_trigger:.2f}. Squaring off entire position.")
+            self.orchestrator.log_activity(f"🚨 Combined credit SL hit! Value ₹{current_value:.2f} >= Trigger ₹{sl_trigger:.2f}.")
             await self._exit_strangle_fully(is_paper=is_paper, reason="COMBINED_STOP_LOSS_BREACHED")
             self.orchestrator.config["_single_strangle_done_today"] = datetime.date.today().isoformat()
             self._clear_state()
@@ -419,6 +463,7 @@ class OptionSellingEngine:
         # 3. Time-based Exit
         if now >= exit_time:
             logging.info(f"[OptionSelling] Time is past exit_time {self.exit_time_str}. Exiting credit spreads...")
+            self.orchestrator.log_activity(f"⏳ Time cutoff reached. Exiting option selling portfolio.")
             await self._exit_strangle_fully(is_paper=is_paper, reason="TIME_CUTOFF")
             self.orchestrator.config["_single_strangle_done_today"] = datetime.date.today().isoformat()
             self._clear_state()

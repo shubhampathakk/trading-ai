@@ -50,7 +50,8 @@ youtube_sentiment:
     - interaction
   llm_strip_fallback: true        # if no SponsorBlock data, ask Gemini to ignore promo
   overall_weight_vs_news: 2.0     # YouTube block weight relative to news block
-  gemini_model: gemini-3.1-pro-preview
+  # gemini_model: gemini-3.1-pro-preview # Old preview model
+  gemini_model: gemini-3.5-flash # Upgraded GA model optimized for agentic reasoning
   channels:
     - handle: "@shubham"
       display_name: "Shubham Pathak"

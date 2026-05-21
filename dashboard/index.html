@@ -218,6 +218,16 @@
                     <button class="btn" id="buy-sell-btn" style="background-color: var(--emerald); justify-content: center; margin-top: 0.5rem; width: 100%;">
                         Buy TATATECH
                     </button>
+            </div>
+
+            <!-- Live Operations Console -->
+            <div class="card" style="display: flex; flex-direction: column; gap: 0.75rem; min-height: 240px; margin-bottom: 0.5rem;">
+                <div class="section-header">
+                    <div class="section-title" style="display: flex; align-items: center; gap: 0.5rem;">📟 Live Operations Feed</div>
+                    <div style="width: 8px; height: 8px; border-radius: 50%; background-color: var(--emerald); box-shadow: 0 0 8px var(--emerald);" id="console-active-dot"></div>
+                </div>
+                <div id="console-log-container" style="flex: 1; overflow-y: auto; font-family: var(--font-mono); font-size: 0.72rem; background: HSL(240 10% 3.5%); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; line-height: 1.5; color: var(--text-muted); max-height: 170px; display: flex; flex-direction: column; gap: 0.4rem; scroll-behavior: smooth; text-align: left;">
+                    <div style="color: var(--text-muted);">[08:50:00] Console initialized. Awaiting agent logs...</div>
                 </div>
             </div>
 

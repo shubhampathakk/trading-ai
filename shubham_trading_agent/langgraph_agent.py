@@ -221,7 +221,8 @@ class LangGraphAgent:
         self.config = config
         self.rag_service = rag_service
         self.api_key = config.get('google_api', {}).get('api_key', "")
-        self.model_name = "gemini-3.1-pro-preview"
+        # self.model_name = "gemini-3.1-pro-preview" # Old preview model replaced by stable GA agentic model
+        self.model_name = "gemini-3.5-flash" # Flagship GA model optimized for agentic reasoning, low latency, and stable endpoint compliance
         self.last_debate_text = ""
 
     def _deterministic_pick(self, market_conditions, sentiment, is_expiry_day,

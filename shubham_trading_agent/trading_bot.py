@@ -238,7 +238,18 @@ class TradingBotOrchestrator:
         self._force_mode_armed = bool(
             (config.get('trading_flags') or {}).get('force_one_trade_today', False)
         )
+        self.latest_logs = []
         self.option_selling_engine = OptionSellingEngine(self)
+
+    def log_activity(self, msg: str):
+        """Appends a timestamped log message to a rolling queue of 15 logs for the dashboard."""
+        if not hasattr(self, "latest_logs") or self.latest_logs is None:
+            self.latest_logs = []
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        formatted_msg = f"[{ts}] {msg}"
+        self.latest_logs.append(formatted_msg)
+        if len(self.latest_logs) > 15:
+            self.latest_logs.pop(0)
 
     def authenticate(self, request_token_override=None):
         """
@@ -258,6 +269,7 @@ class TradingBotOrchestrator:
                 self.market_condition_identifier = MarketConditionIdentifier(self.kite, self.config)
                 self.order_agent = OrderExecutionAgent(self.kite, self.config)
                 self.position_agent = PositionManagementAgent(self.kite, self.config, self.rag_service)
+                self.position_agent.orchestrator = self
                 self.pcr_feed = PCRFeed(self.kite, self.config)
                 logging.info("Agents initialized successfully.")
                 return True
@@ -288,6 +300,7 @@ class TradingBotOrchestrator:
             self.market_condition_identifier = MarketConditionIdentifier(self.kite, self.config)
             self.order_agent = OrderExecutionAgent(self.kite, self.config)
             self.position_agent = PositionManagementAgent(self.kite, self.config, self.rag_service)
+            self.position_agent.orchestrator = self
             self.pcr_feed = PCRFeed(self.kite, self.config)
             logging.info("Agents initialized successfully.")
             
@@ -1415,6 +1428,8 @@ class TradingBotOrchestrator:
                 f"  Targets    : T1 +{_t1:.0f}%  T2 +{_t2:.0f}%  Trail {_trail:.0f}%",
                 f"  Capital    : ₹{_cap:,.0f}  │  Entry from {_entry_s}  │  Cutoff 13:30",
             ], level="info")
+            self.log_activity(f"🤖 AI SETUP COMPLETE: Recommended Strategy is {self.active_strategy_name}")
+            self.log_activity(f"Sentiment: {self.day_sentiment} | Regime: {', '.join(todays_conditions)}")
 
             # Fix: if setup completed but we're already past the entry cutoff,
             # go straight to STOPPED — no point waiting in AWAITING_SIGNAL all day.
@@ -1472,7 +1487,8 @@ class TradingBotOrchestrator:
                 "consecutive_losses": self.consecutive_losses,
                 "starting_capital": self.starting_capital,
                 "debate_log": getattr(self.langgraph_agent, "last_debate_text", ""),
-                "active_position": active_pos
+                "active_position": active_pos,
+                "latest_logs": getattr(self, "latest_logs", [])
             }
             
             dashboard_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../dashboard/bot_status.json"))
@@ -2311,14 +2327,17 @@ class TradingBotOrchestrator:
                     #   RANGE    → scalp mode (VWAP/RSI-extreme, half-size, tight targets).
                     #   CHOPPY   → fully blocked; too many direction changes for any edge.
                     self._day_quality = self._classify_day_quality(day_df_for_signal)
+                    premium_strategies = {"Intraday_Option_Selling", "Iron_Butterfly", "Bull_Put_Spread", "Bear_Call_Spread"}
+
                     if self._day_quality == 'CHOPPY':
-                        self._exit_range_scalp_mode()
-                        logging.warning(
-                            "[DayQuality] CHOPPY — too noisy for any entries (7+ "
-                            "direction changes). Waiting 60 s."
-                        )
-                        await asyncio.sleep(60)
-                        continue
+                        if self.active_strategy_name in premium_strategies:
+                            logging.info(f"[DayQuality] CHOPPY — Prime conditions for {self.active_strategy_name}. Proceeding to sell premium.")
+                            self._exit_range_scalp_mode()
+                        else:
+                            self._exit_range_scalp_mode()
+                            logging.warning("[DayQuality] CHOPPY — too noisy for directional entries. Waiting 60 s.")
+                            await asyncio.sleep(60)
+                            continue
                     elif self._day_quality == 'RANGE':
                         scalp_ok = self._enter_range_scalp_mode(day_df_for_signal)
                         if not scalp_ok:
@@ -2330,6 +2349,7 @@ class TradingBotOrchestrator:
                         self._exit_range_scalp_mode()
 
                     if signal != 'HOLD':
+                        self.log_activity(f"Strategy '{self.active_strategy_name}' generated entry signal: {signal}")
                         # The strategy fired *something* — bumps the per-strategy
                         # signal counter so reassessment doesn't cool it down.
                         # We still gate the trade below; cooldown only triggers
@@ -2351,10 +2371,11 @@ class TradingBotOrchestrator:
                         if force_mode_now or getattr(self.active_strategy, 'is_reversal_trade', False) or is_primary_signal:
                             # ATR momentum gate — bypassed in force mode.
                             if not force_mode_now and self._is_momentum_too_low(day_df_for_signal):
-                                pass  # already logged inside helper
+                                self.log_activity(f"Entry signal '{signal}' BLOCKED by ATR Momentum gate.")
                             # VIX gate — bypassed in force mode.
                             elif not force_mode_now and await self._is_vix_too_high():
                                 logging.warning("Skipping entry due to VIX gate.")
+                                self.log_activity(f"Entry signal '{signal}' BLOCKED by VIX gate.")
                             # PCR gate — bypassed in force mode.
                             elif not force_mode_now and not self._is_pcr_aligned(signal):
                                 pcr_tag = (self._pcr_data or {}).get("tag", "?")
@@ -2364,9 +2385,10 @@ class TradingBotOrchestrator:
                                     f"(PCR={pcr_val:.3f if pcr_val else 'N/A'}). "
                                     f"PCR contradicts trade direction — skipping entry."
                                 )
+                                self.log_activity(f"Entry signal '{signal}' BLOCKED by PCR gate (PCR={pcr_val:.2f if pcr_val else 'N/A'}).")
                             # Trap detection — skip false breakout/breakdown entries.
                             elif not force_mode_now and self._is_false_breakout(signal, day_df_for_signal):
-                                pass  # already logged inside helper
+                                self.log_activity(f"Entry signal '{signal}' BLOCKED by Whipsaw Trap detection.")
                             else:
                                 # Inject professional size multiplier so the order
                                 # agent applies progressive loss sizing + time-of-day
@@ -2405,6 +2427,7 @@ class TradingBotOrchestrator:
                                         f"15-min confirmation gate: {signal} blocked. "
                                         f"{_15m_reason}"
                                     )
+                                    self.log_activity(f"Entry signal '{signal}' BLOCKED by 15-min confirmation: {_15m_reason}")
                                 else:
                                     if _15m_reason:
                                         logging.info(f"15-min gate: {_15m_reason}")
@@ -2415,10 +2438,13 @@ class TradingBotOrchestrator:
                                     )
                                     if trade_details:
                                         trade_details['Strategy'] = self.active_strategy_name
+                                        self.log_activity(f"🛒 Position Entered: {trade_details['symbol']} Qty={trade_details['quantity']} @ ₹{trade_details['entry_price']:.2f}")
                                         self.position_agent.start_trade(trade_details)
                                         if not is_paper:
                                             await self.position_agent.attach_broker_stop_loss(self.order_agent)
                                         self.trades_today_count += 1
+                                    else:
+                                        self.log_activity(f"❌ Order placement failed or rejected by exchange.")
                                         # Clear the \r status line before trade logs print.
                                         if self._is_interactive_tty():
                                             print(flush=True)
@@ -2467,11 +2493,13 @@ class TradingBotOrchestrator:
                         gemini_api_key=self.config.get('google_api', {}).get('api_key'),
                     )
                     if isinstance(status, dict):
+                        pnl = float(status.get('ProfitLoss', 0) or 0.0)
+                        self.log_activity(f"🚪 Position Closed: {status.get('Symbol')} P&L: ₹{pnl:+.2f} (Reason: {status.get('ExitReason')})")
                         log_trade(status)
-                        self._record_realized_pnl(status.get('ProfitLoss', 0))
+                        self._record_realized_pnl(pnl)
                         # On a losing trade, build a detailed post-mortem,
                         # print it to the terminal, and email it.
-                        if float(status.get('ProfitLoss', 0) or 0) < 0:
+                        if pnl < 0:
                             self._handle_losing_trade(status, underlying_df_hist)
                         self.bot_state = "AWAITING_SIGNAL"
                         self.awaiting_signal_since = datetime.datetime.now()

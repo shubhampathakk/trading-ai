@@ -1862,7 +1862,8 @@ class PositionManagementAgent:
             )
             api_url = (
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-1.5-flash:generateContent?key={gemini_api_key}"
+                # f"gemini-1.5-flash:generateContent?key={gemini_api_key}" # Old model setting
+                f"gemini-3.5-flash:generateContent?key={gemini_api_key}" # Upgraded to stable GA flagship agentic model
             )
             payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
             timeout = aiohttp.ClientTimeout(total=30)

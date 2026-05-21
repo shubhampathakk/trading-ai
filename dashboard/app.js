@@ -526,6 +526,32 @@ async function pollBotStatus() {
         } else {
             el.activeTradeCard.style.display = "none";
         }
+        
+        // Render Live Console Logs
+        const consoleContainer = document.getElementById("console-log-container");
+        if (consoleContainer && data.latest_logs && Array.isArray(data.latest_logs)) {
+            let newHTML = "";
+            
+            data.latest_logs.forEach(log => {
+                let logColor = "var(--text-muted)";
+                if (log.includes("🛒") || log.includes("BUY") || log.includes("Entered") || log.includes("COMPLETE") || log.includes("PROFIT") || log.includes("Prime")) {
+                    logColor = "var(--emerald)";
+                } else if (log.includes("❌") || log.includes("SELL") || log.includes("Stopped") || log.includes("failed") || log.includes("REJECTED") || log.includes("SL hit") || log.includes("BLOCKED")) {
+                    logColor = "var(--rose)";
+                } else if (log.includes("🎯") || log.includes("🚨") || log.includes("TSL") || log.includes("trailed") || log.includes("Re-assessing") || log.includes("assessment")) {
+                    logColor = "HSL(36 100% 50%)"; // orange highlight
+                } else if (log.includes("AWAITING_SIGNAL") || log.includes("SETUP") || log.includes("🤖")) {
+                    logColor = "HSL(263.4 70% 70%)"; // light purple
+                }
+                
+                newHTML += `<div style="color: ${logColor}; font-size: 0.72rem; margin-bottom: 0.15rem;">${log}</div>`;
+            });
+            
+            if (newHTML && consoleContainer.innerHTML !== newHTML) {
+                consoleContainer.innerHTML = newHTML;
+                consoleContainer.scrollTop = consoleContainer.scrollHeight;
+            }
+        }
     } catch (e) {
         // Ignore file-absent errors on startup
     }
