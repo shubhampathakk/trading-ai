@@ -50,9 +50,9 @@ graph TD
 ### 📁 Codebase Directory & Component Map
 
 *   **📂 `shubham_trading_agent/`**: The cognitive algorithmic trading robot (Python 3.13 inside the `trade_bot` virtual environment).
-    *   [`trading_bot.py`](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent/trading_bot.py): The system orchestrator, event loop, state machine, and gateway manager.
+    *   [`trading_bot.py`](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent/trading_bot.py): The system orchestrator, event loop, state machine, and rolling operations logger.
     *   [`agents.py`](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent/agents.py): Specialized executors: `SignalAgent` (indicator scanners), `OrderExecutionAgent` (strike selector and slippage limits), and `PositionManagementAgent` (trailing stop-loss and partial exits).
-    *   [`langgraph_agent.py`](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent/langgraph_agent.py): AI Strategy consensus debater engine powered by Gemini 3.1 Pro.
+    *   [`langgraph_agent.py`](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent/langgraph_agent.py): AI Strategy consensus debater engine powered by Gemini 3.5 Flash.
     *   [`option_selling_engine.py`](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent/option_selling_engine.py): Institutional-grade credit spread and strangle selling engine.
     *   [`fii_dii_scraper.py`](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent/fii_dii_scraper.py): cash-market money flows scraper from NSE India.
 *   **📂 `dashboard/`**: Premium Single Page Application (SPA) styled with outfits typography and zinc-dark glassmorphism.
@@ -65,7 +65,7 @@ graph TD
 
 ---
 
-## 🧠 The Gemini 3.1 Pro Consensus Loop
+## 🧠 The Gemini 3.5 Flash GA Consensus Loop
 
 Rather than using single, rigid rules or unsafe LLM generations, [`langgraph_agent.py`](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent/langgraph_agent.py) spawns a simulated **3-agent Quantitative Investment Board Debate**:
 
@@ -198,4 +198,5 @@ Designed inside [`dashboard/index.html`](file:///Users/shubhampathakk/Documents/
 *   **Zinc Glassmorphic Cards**: Premium glassmorphism visuals containing total portfolio value, day P&L values, and available balances.
 *   **AI Agent Status Bar**: Highlights the active bot status (AWAITING_SIGNAL, IN_POSITION, SETUP, or STOPPED) alongside the active strategy name, daily sentiment bias, and a button to read the live Gemini quant debate transcripts inside a modern modal dialog.
 *   **Live Active Option Card**: Shows the live contract code, quantity, entry price, current premium, exact net Rupee P&L, and ticks trailing stop levels and high watermarks.
+*   **Live Operations Feed Console**: Displays real-time scrolling timestamped operational logs color-coded dynamically in the sidebar console box.
 *   **AI Chat Assistant Sidebar**: Converse with your portfolio using natural language (analyzes holdings, yields, margins, and calculates top/worst performers).

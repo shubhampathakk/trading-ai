@@ -2,7 +2,7 @@
 
 A unified, state-of-the-art, AI-powered algorithmic trading platform and visual cockpit for the Indian stock market (NIFTY 50 Options). 
 
-This platform connects a **cognitive multi-agent Python trading bot** powered by **Google Gemini 3.1 Pro** with a **premium glassmorphic trading dashboard** in the browser, communicating through a lightweight **REST API Proxy**.
+This platform connects a **cognitive multi-agent Python trading bot** powered by **Google Gemini 3.5 Flash** with a **premium glassmorphic trading dashboard** in the browser, communicating through a lightweight **REST API Proxy**.
 
 ---
 
@@ -23,18 +23,18 @@ graph TD
 1. **📁 [shubham_trading_agent/](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent)**:
    * The core algorithmic trading robot in Python 3.13 (using a dedicated `trade_bot` virtual environment).
    * Implements a cooperative **Multi-Agent Specialized Team**:
-     * **`Orchestrator`** (`trading_bot.py`): Central brain, event loop, and state machine.
+     * **`Orchestrator`** (`trading_bot.py`): Central brain, event loop, state machine, and rolling operations logger.
      * **`SignalAgent`** (`agents.py`): Scans charts for technical entries (CPR breakouts, RSI divergence, EMA crosses).
      * **`OrderExecutionAgent`** (`agents.py`): Handles delta-targeted strike selection (ATM weekly options) and slippage limit order retry loops.
      * **`PositionManagementAgent`** (`agents.py`): Monitors live positions tick-by-tick, implements a professional **40/40/20 tiered profit-booking exit plan**, and trails stop-loss via Parabolic SAR.
-     * **`LangGraphAgent`** (`langgraph_agent.py`): Google Gemini intelligence director.
+     * **`LangGraphAgent`** (`langgraph_agent.py`): Google Gemini 3.5 Flash intelligence director.
      * **`SentimentAgent`** & **`RAGService`**: Scraping financial news for bias filters, and retrieving historical trade logs context.
      * **`test_consensus.py`**: Instantly runs a simulated RBI policy day to dry-run the Gemini debate loops.
 
 2. **📁 [dashboard/](file:///Users/shubhampathakk/Documents/Assets/Trading/dashboard)**:
    * Premium browser-based Single Page Application (SPA) styled with custom modern typography (`Outfit`, `JetBrains Mono`) and glassmorphic zinc dark-mode layouts.
    * Displays real-time portfolio current value, equity available margins, active stock holdings stats tables, and interactive allocation pie charts (Chart.js).
-   * Features a **Live AI Agent Monitor Banner** detailing the active bot state, selected strategy, and a button to read the live debate transcripts.
+   * Features a **Live AI Agent Monitor Banner** detailing the active bot strategy, a **Live Operations Feed scrolling terminal console** syncing tick-by-tick agent activities, and a button to read the live debate transcripts.
    * Features an **AI Chat Assistant Panel** in the sidebar to converse with the active portfolio in natural language.
 
 3. **📁 [mcp_helpers/](file:///Users/shubhampathakk/Documents/Assets/Trading/mcp_helpers)**:
@@ -52,8 +52,8 @@ graph TD
 
 ## 🧠 Core Intelligence & Smart Data Feeds
 
-### 1. The Gemini 3.1 Pro Consensus Loop
-Instead of a single AI decision, `LangGraphAgent` simulates an internal **quantitative board debate** powered by `gemini-3.1-pro-preview`:
+### 1. The Gemini 3.5 Flash GA Consensus Loop
+Instead of a single AI decision, `LangGraphAgent` simulates an internal **quantitative board debate** powered by the generally available stable flagship `gemini-3.5-flash`:
 * **`Alpha Strategist`** proposes a strategy (focusing on trend momentum, breakouts, and profit capturing).
 * **`Risk Manager`** critiques the choice (highlighting whipsaw traps, overextended RSI, or option IV crush on policy events).
 * **`Consensus Judge`** reviews RAG historical win rates and FII/DII net flows to make the final, extremely safe strategy selection.
@@ -87,10 +87,9 @@ To ensure the platform is 100% robust, compliant, and safe to trade live on the 
 *   **The Feature**: Restoring or restarting the bot mid-session no longer prompts you for a manual Zerodha login token.
 *   **How it works**: The bot dynamically retrieves your cached daily `ZERODHA_ACCESS_TOKEN` from `.env` on boot, validates it against Zerodha's `profile` API, and automatically restores the session to enter active polling in under 2 seconds. Manual interactive prompts are skipped entirely unless the token is genuinely expired.
 
-### 📊 2. Real-Time "AI Active Trade Monitor" Cockpit Card
-*   **The Feature**: When the agent places a trade, an elegant, zinc-glassmorphic **Active Trade Card** slides into view in your browser cockpit automatically.
-*   **Real-time P&L Math**: In the background, the orchestrator continuously calculates the option's live premium LTP and your **exact net Rupee (₹) P&L** (including any banked partial exit profits).
-*   **Stop Boundaries**: Visualizes your live Hard Stop-Loss (₹), Trailing Stop-Loss (₹), and High Watermark premiums, updating tick-by-tick. Wipes out of view automatically once the position is closed.
+### 📊 2. Real-Time "AI Active Trade Monitor" & Live Console Feed
+*   **The Monitor Card**: When the agent places a trade, an elegant, zinc-glassmorphic **Active Trade Card** slides into view in your browser cockpit automatically. Calculates live options LTPs, net Rupee (₹) P&L, Hard Stop-Loss, and trailing SL boundaries tick-by-tick.
+*   **The Console Feed**: Streams rolling timestamped operational logs (`latest_logs`) directly into your browser sidebar console, color-coded by event type (Setup, Scans, Gates, Fills, and Exits).
 
 ### 🛑 3. SEBI Physical Settlement Expiries Gate
 *   **The Feature**: Under SEBI regulations, holding In-the-Money (ITM) stock options derivatives during expiry week triggers mandatory physical delivery of shares (requiring over ₹5L–₹20L margin).
@@ -100,9 +99,17 @@ To ensure the platform is 100% robust, compliant, and safe to trade live on the 
 *   **The Feature**: Stock options are significantly less liquid than Nifty index options. Rigid thresholds would deadlock the bot or cause high entry/exit slippage.
 *   **How it works**: The bot automatically detects the underlying asset type. If a stock option is traded, it dynamically scales down the required Open Interest (OI) gate to $1/10\text{th}$ (minimum 1,000 contracts) and widens bid-ask spread limits up to $5\%$ to align with the natural liquidity profile of Indian stocks.
 
-### 💣 5. Fail-Safe Anti-Orphaning Exit Recovery
+### 💣 5. Fail-Safe Anti-Orphaning Spread & Exit Protection
 *   **State Preservation**: Exit orders (software SL, time cutoff, indicator trigger) must confirm a `COMPLETE` fill status on the exchange before clearing local position state. If the order fails, it retains the local state file (`active_trade.json`) and retries the exit loop in the next tick.
+*   **Strict Execution Rollback**: When entering multi-leg spreads, if one leg executes successfully but adjacent legs fail, the engine triggers an **immediate protective market rollback** on filled legs to avoid skewed directional exposure.
 *   **Spread leg Cover**: If exiting a spread and the long leg fills but the short leg fails, the bot dynamically converts the remaining short contract into a simulated **Naked Short option position** in its state files, ensuring subsequent cycles cover it cleanly.
+
+### 📈 6. Choppy Day Whitelist & 0-DTE Gamma stop-loss Widening
+*   **Choppy Day Whitelist**: Whitelists premium selling credit spread and strangle strategies to bypass choppy-day blocks to harvest range-bound decay.
+*   **0-DTE Gamma SL Widening**: Dynamically expands stop-loss thresholds by 1.5x on weekly options expiry days (0-DTE) to provide positions room to breathe through volatile gamma-driven whipsaws.
+*   **Batched LTP Fetching**: Fetches all option leg premiums in a single batched REST call, eliminating API rate limit issues and preventing price desynchronization inside fast-moving markets.
+
+--- in its state files, ensuring subsequent cycles cover it cleanly.
 
 ---
 
