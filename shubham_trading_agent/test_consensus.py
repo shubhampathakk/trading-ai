@@ -21,8 +21,8 @@ async def test_consensus_agent():
         print("❌ Error: Real GOOGLE_API_KEY must be set in your .env file to test the live Gemini Pro model.", flush=True)
         return
         
-    # print("Initializing LangGraphAgent with gemini-3.1-pro-preview...", flush=True) # Old model print
-    print("Initializing LangGraphAgent with gemini-3.5-flash...", flush=True)
+    # print("Initializing LangGraphAgent with gemini-3.5-flash...", flush=True) # Old model print
+    print("Initializing LangGraphAgent with gemini-3.1-pro-preview...", flush=True)
     # Set use_llm to True in config to force the LLM path
     config['strategy_selector'] = config.get('strategy_selector', {}) or {}
     config['strategy_selector']['use_llm'] = True
@@ -114,8 +114,8 @@ async def test_consensus_agent():
         ssl_ctx = ssl._create_unverified_context()
         conn = aiohttp.TCPConnector(ssl=ssl_ctx)
         
-        # api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key={gemini_key}" # Old model setting
-        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={gemini_key}" # Upgraded to stable GA flagship model
+        # api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={gemini_key}" # Old model setting
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key={gemini_key}" # Reverted to Pro model
         payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
 
         print("Connecting to Google AI Studio and sending debate prompt...", flush=True)
@@ -125,8 +125,8 @@ async def test_consensus_agent():
                 result = await response.json()
 
         full_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-        # print("\n--- DEBATE LOGS RECEIVED FROM GEMINI-3.1-PRO-PREVIEW ---") # Old model print
-        print("\n--- DEBATE LOGS RECEIVED FROM GEMINI-3.5-FLASH ---")
+        # print("\n--- DEBATE LOGS RECEIVED FROM gemini-3.1-pro-preview ---") # Old model print
+        print("\n--- DEBATE LOGS RECEIVED FROM gemini-3.5-flash ---")
         print(full_text)
         print("-------------------------------------------------------\n")
         

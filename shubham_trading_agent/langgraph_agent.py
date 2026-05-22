@@ -221,8 +221,8 @@ class LangGraphAgent:
         self.config = config
         self.rag_service = rag_service
         self.api_key = config.get('google_api', {}).get('api_key', "")
-        # self.model_name = "gemini-3.1-pro-preview" # Old preview model replaced by stable GA agentic model
-        self.model_name = "gemini-3.5-flash" # Flagship GA model optimized for agentic reasoning, low latency, and stable endpoint compliance
+        # self.model_name = "gemini-3.1-pro-preview" # Old flagship model setting
+        self.model_name = "gemini-3.5-flash" # Standardized flagship: low-latency + defensive theta GA model
         self.last_debate_text = ""
 
     def _deterministic_pick(self, market_conditions, sentiment, is_expiry_day,
@@ -272,6 +272,12 @@ class LangGraphAgent:
         """
         cfg = (self.config.get("strategy_selector", {}) or {})
         use_llm = bool(cfg.get("use_llm", False))
+        option_selling_enabled = bool(self.config.get("option_selling", {}).get("enable", True))
+
+        if not option_selling_enabled:
+            exclude_strategies = set(exclude_strategies or []) | {
+                "Intraday_Option_Selling", "Bull_Put_Spread", "Bear_Call_Spread", "Iron_Butterfly"
+            }
 
         if not use_llm or not self.api_key:
             return self._deterministic_pick(
@@ -314,9 +320,8 @@ class LangGraphAgent:
         if user_prompt:
             prompt_sections.append(f"\n**User's Preference/Observation:** '{user_prompt}'")
 
-        prompt_sections.append("\n**Available Strategies (and their primary purpose):**")
-        prompt_sections.append(
-            """
+        # Build available strategies dynamically
+        strategies_desc = """
 1.  **'Gemini_Default'**: A balanced, multi-indicator strategy (CPR, EMA, RSI Divergence).
 2.  **'Supertrend_MACD'**: A strong trend-following strategy.
 3.  **'Volatility_Cluster_Reversal'**: A counter-trend strategy for high volatility.
@@ -332,12 +337,17 @@ class LangGraphAgent:
 13. **'VWAP_Reversion'**: HIGH-FREQUENCY intraday VWAP-reclaim play — fires multiple times per day in a trending session. Best on directional days with normal-to-low vol.
 14. **'NR7_Compression'**: Compression-then-expansion breakout — looks for the narrowest range bar of the last 7 and buys/sells the breakout on volume. Best on low-volatility, low-IV days.
 15. **'Expiry_Momentum_Scalp'**: Weekly-expiry gamma scalp — EMA-9/21 fresh cross + RSI + ATR expansion + volume. ONLY runs on weekly expiry day (Thursday), 09:45–12:30.
-16. **'Intraday_Option_Selling'**: Intraday double-short strangle/straddle — sells Call & Put options dynamically to collect theta (time) decay. Excellent for quiet, sideways, range-bound sessions under low-to-medium VIX, or when FII/DII cash flows are minimal and no breakouts are expected.
+"""
+        if option_selling_enabled:
+            strategies_desc += """16. **'Intraday_Option_Selling'**: Intraday double-short strangle/straddle — sells Call & Put options dynamically to collect theta (time) decay. Excellent for quiet, sideways, range-bound sessions under low-to-medium VIX, or when FII/DII cash flows are minimal and no breakouts are expected.
 17. **'Bull_Put_Spread'**: Intraday Credit Put Spread — Sell 1 OTM Put near support, Buy 1 further OTM Put for protection. Generates a net credit while strictly capping maximum potential loss. Best for Bullish to Mildly Bullish/Neutral markets where the agent expects support to hold.
 18. **'Bear_Call_Spread'**: Intraday Credit Call Spread — Sell 1 OTM Call near resistance, Buy 1 further OTM Call for protection. Generates a net credit while capping maximum loss. Best for Bearish to Mildly Bearish/Neutral markets where resistance is expected to hold.
 19. **'Iron_Butterfly'**: Intraday Iron Butterfly — Sell 1 ATM CE + 1 ATM PE, Buy 1 OTM CE + 1 OTM PE wings for capped protection. Generates a high net credit. Excellent for strictly Neutral/Stagnant range-bound days with low volatility.
 """
-        )
+        
+        prompt_sections.append("\n**Available Strategies (and their primary purpose):**")
+        prompt_sections.append(strategies_desc)
+        
         prompt_sections.append(
             "\nRun the debate and provide your output in the following format:\n"
             "[Alpha Strategist's Pitch]: (Proposes a strategy from the list + rationale)\n"
@@ -351,29 +361,32 @@ class LangGraphAgent:
         try:
             api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={self.api_key}"
             payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
-
+ 
             import ssl
             ssl_ctx = ssl._create_unverified_context()
             conn = aiohttp.TCPConnector(ssl=ssl_ctx)
-            timeout = aiohttp.ClientTimeout(total=15)
+            timeout = aiohttp.ClientTimeout(total=90)
             async with aiohttp.ClientSession(connector=conn, timeout=timeout) as session:
                 async with session.post(api_url, json=payload) as response:
                     response.raise_for_status()
                     result = await response.json()
-
+ 
             full_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
             self.last_debate_text = full_text
             recommended_strategy = full_text.replace("'", "").split('\n')[-1].strip()
-
+ 
             valid_strategies = [
                 "Gemini_Default", "Supertrend_MACD", "Volatility_Cluster_Reversal",
                 "Volume_Spread_Analysis", "EMA_Cross_RSI", "Momentum_VWAP_RSI",
                 "Breakout_Prev_Day_HL", "Opening_Range_Breakout", "BB_Squeeze_Breakout",
                 "MA_Crossover", "RSI_Divergence", "Reversal_Detector",
                 "VWAP_Reversion", "NR7_Compression", "Expiry_Momentum_Scalp",
-                "Intraday_Option_Selling",
-                "Bull_Put_Spread", "Bear_Call_Spread", "Iron_Butterfly",
             ]
+            if option_selling_enabled:
+                valid_strategies += [
+                    "Intraday_Option_Selling", "Bull_Put_Spread", "Bear_Call_Spread", "Iron_Butterfly",
+                ]
+            
             if recommended_strategy not in valid_strategies:
                 logging.warning(
                     f"[Gemini Agent] LLM returned unknown strategy: '{recommended_strategy}'. "

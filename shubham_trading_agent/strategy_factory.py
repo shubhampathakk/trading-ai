@@ -885,6 +885,7 @@ class VWAP_Reversion_Strategy(BaseStrategy):
     def __init__(self, kite, config):
         super().__init__(kite, config)
         self.name = "VWAP_Reversion"
+        self.is_reversal_trade = True
 
     def generate_signals(self, day_df, sentiment, index=None, **kwargs):
         if index is None:
@@ -917,38 +918,28 @@ class VWAP_Reversion_Strategy(BaseStrategy):
         prev_close, prev_vwap = prev['close'], prev['vwap']
 
         # Bullish reclaim: prior bar at/under VWAP, current bar closes above it.
-        if sentiment in ['Bullish', 'Very Bullish']:
-            reclaimed = (prev_close <= prev_vwap) and (cur_close > cur_vwap)
-            momentum_ok = cur_rsi > 45
-            if reclaimed and momentum_ok:
-                logging.info(f"[{self.name}] BUY: VWAP reclaim with RSI {cur_rsi:.1f} > 45.")
-                return 'BUY'
-            self._log_hold(
-                f"need VWAP-reclaim (prev close<=VWAP AND curr close>VWAP) AND RSI>45. "
-                f"prev_close={prev_close:.2f} vs prev_vwap={prev_vwap:.2f} "
-                f"({'<=' if prev_close <= prev_vwap else '>'}), "
-                f"curr_close={cur_close:.2f} vs curr_vwap={cur_vwap:.2f} "
-                f"({'>' if cur_close > cur_vwap else '<='}), "
-                f"rsi={cur_rsi:.1f} (momentum_ok={momentum_ok})"
-            )
-            return 'HOLD'
+        # Dynamic Support Test (Option C): Trigger if previous candle closed below, OR if previous/current low dipped below/near VWAP support
+        reclaimed = (prev_close <= prev_vwap or prev['low'] <= prev_vwap * 1.0005 or current['low'] <= cur_vwap * 1.0005) and (cur_close > cur_vwap)
+        momentum_ok_buy = cur_rsi > 45
+        if reclaimed and momentum_ok_buy:
+            logging.info(f"[{self.name}] BUY: VWAP Support Test/Reclaim with RSI {cur_rsi:.1f} > 45.")
+            return 'BUY'
 
         # Bearish loss: prior bar at/above VWAP, current bar closes below it.
-        if sentiment in ['Bearish', 'Very Bearish']:
-            lost = (prev_close >= prev_vwap) and (cur_close < cur_vwap)
-            momentum_ok = cur_rsi < 55
-            if lost and momentum_ok:
-                logging.info(f"[{self.name}] SELL: VWAP loss with RSI {cur_rsi:.1f} < 55.")
-                return 'SELL'
-            self._log_hold(
-                f"need VWAP-loss (prev close>=VWAP AND curr close<VWAP) AND RSI<55. "
-                f"prev_close={prev_close:.2f} vs prev_vwap={prev_vwap:.2f}, "
-                f"curr_close={cur_close:.2f} vs curr_vwap={cur_vwap:.2f}, "
-                f"rsi={cur_rsi:.1f} (momentum_ok={momentum_ok})"
-            )
-            return 'HOLD'
+        # Dynamic Resistance Test (Option C): Trigger if previous close was above, OR if previous/current high tested resistance above/near VWAP
+        lost = (prev_close >= prev_vwap or prev['high'] >= prev_vwap * 0.9995 or current['high'] >= cur_vwap * 0.9995) and (cur_close < cur_vwap)
+        momentum_ok_sell = cur_rsi < 55
+        if lost and momentum_ok_sell:
+            logging.info(f"[{self.name}] SELL: VWAP Resistance Test/Loss with RSI {cur_rsi:.1f} < 55.")
+            return 'SELL'
 
-        self._log_hold(f"sentiment {sentiment!r} is Neutral — no directional setup")
+        # If neither triggers, log the hold state metrics:
+        self._log_hold(
+            f"need reclaim (close > VWAP={cur_vwap:.2f} & RSI > 45) OR loss (close < VWAP={cur_vwap:.2f} & RSI < 55). "
+            f"prev_close={prev_close:.2f}, curr_close={cur_close:.2f}, "
+            f"curr_low={current['low']:.2f}, curr_high={current['high']:.2f}, "
+            f"rsi={cur_rsi:.1f}"
+        )
         return 'HOLD'
 
     def get_status_message(self, day_df, sentiment, **kwargs):

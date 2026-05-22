@@ -604,6 +604,6 @@ class OptionSellingEngine:
 
         self.orchestrator._print_event([
             f"Position Exited completely ({reason})",
-            f"  Realized session P&L: ₹{total_pnl:+,2f}",
-            f"  New total daily P&L: ₹{self.orchestrator.realized_pnl_today:+,2f}"
+            f"  Realized session P&L: ₹{total_pnl:+,.2f}",
+            f"  New total daily P&L: ₹{self.orchestrator.realized_pnl_today:+,.2f}"
         ], level="trade")

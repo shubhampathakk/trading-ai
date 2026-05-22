@@ -2334,10 +2334,12 @@ class TradingBotOrchestrator:
                             logging.info(f"[DayQuality] CHOPPY — Prime conditions for {self.active_strategy_name}. Proceeding to sell premium.")
                             self._exit_range_scalp_mode()
                         else:
-                            self._exit_range_scalp_mode()
-                            logging.warning("[DayQuality] CHOPPY — too noisy for directional entries. Waiting 60 s.")
-                            await asyncio.sleep(60)
-                            continue
+                            # Treat CHOPPY like RANGE for option buying to allow strategic VWAP scalp entries
+                            # rather than entering a strict lockout.
+                            scalp_ok = self._enter_range_scalp_mode(day_df_for_signal)
+                            if not scalp_ok:
+                                await asyncio.sleep(60)
+                                continue
                     elif self._day_quality == 'RANGE':
                         scalp_ok = self._enter_range_scalp_mode(day_df_for_signal)
                         if not scalp_ok:
@@ -2382,10 +2384,10 @@ class TradingBotOrchestrator:
                                 pcr_val = (self._pcr_data or {}).get("pcr")
                                 logging.warning(
                                     f"PCR gate: {signal} blocked by {pcr_tag} "
-                                    f"(PCR={pcr_val:.3f if pcr_val else 'N/A'}). "
+                                    f"(PCR={f'{pcr_val:.3f}' if pcr_val is not None else 'N/A'}). "
                                     f"PCR contradicts trade direction — skipping entry."
                                 )
-                                self.log_activity(f"Entry signal '{signal}' BLOCKED by PCR gate (PCR={pcr_val:.2f if pcr_val else 'N/A'}).")
+                                self.log_activity(f"Entry signal '{signal}' BLOCKED by PCR gate (PCR={f'{pcr_val:.2f}' if pcr_val is not None else 'N/A'}).")
                             # Trap detection — skip false breakout/breakdown entries.
                             elif not force_mode_now and self._is_false_breakout(signal, day_df_for_signal):
                                 self.log_activity(f"Entry signal '{signal}' BLOCKED by Whipsaw Trap detection.")

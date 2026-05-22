@@ -13,6 +13,7 @@ shubham_trading_agent/state/
 shubham_trading_agent/output/
 shubham_trading_agent/news_cache/
 shubham_trading_agent/trade_bot/
+scratch
 
 # Ngrok binaries
 shubham_trading_agent/ngrok

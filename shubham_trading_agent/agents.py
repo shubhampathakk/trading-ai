@@ -1152,7 +1152,6 @@ class OrderExecutionAgent:
                     logging.warning(f"Option LTP unavailable for {symbol}; skipping.")
                     return None, 0, 0
 
-            # ---------- Sizing (shared by both pathways) ----------
             equity = (margins or {}).get("equity", {}).get("available", {})
             capital = (
                 equity.get("live_balance")
@@ -1475,12 +1474,12 @@ class PositionManagementAgent:
                 current_price = max(0.0, float(current_price) - float(short_price))
             # If short LTP is unavailable, fall back to long LTP only (conservative).
 
-        # 3. Hard time exit — never hold options past 14:00 IST.
+        # 3. Hard time exit — never hold options past 14:30 IST.
         #    Theta and bid-ask spread widen sharply in the last 75 min.
-        _hard_close_time = datetime.time(14, 0)
+        _hard_close_time = datetime.time(14, 30)
         if datetime.datetime.now().time() >= _hard_close_time:
             logging.info(
-                f"Hard time exit: {datetime.datetime.now().strftime('%H:%M')} >= 14:00 — "
+                f"Hard time exit: {datetime.datetime.now().strftime('%H:%M')} >= 14:30 — "
                 f"closing {symbol} to avoid theta/spread damage."
             )
             return await self.exit_trade(
@@ -1862,8 +1861,8 @@ class PositionManagementAgent:
             )
             api_url = (
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
-                # f"gemini-1.5-flash:generateContent?key={gemini_api_key}" # Old model setting
-                f"gemini-3.5-flash:generateContent?key={gemini_api_key}" # Upgraded to stable GA flagship agentic model
+                # f"gemini-3.1-pro-preview:generateContent?key={gemini_api_key}" # Old model setting
+                f"gemini-1.5-flash:generateContent?key={gemini_api_key}" # Original low-latency Flash analyzer model
             )
             payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
             timeout = aiohttp.ClientTimeout(total=30)

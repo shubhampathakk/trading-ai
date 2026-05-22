@@ -83,8 +83,8 @@ class YouTubeSentimentAgent:
         self.channels = list(cfg.get("channels", []) or [])
         self.youtube_api_key = (config.get("youtube_api", {}) or {}).get("api_key", "")
         self.gemini_api_key = gemini_api_key
-        # self.gemini_model = cfg.get("gemini_model", "gemini-3.1-pro-preview") # Old preview model
-        self.gemini_model = cfg.get("gemini_model", "gemini-3.5-flash") # Upgraded default to gemini-3.5-flash for latency and stable GA agentic capacity
+        # self.gemini_model = cfg.get("gemini_model", "gemini-3.5-flash") # Old flagship model setting
+        self.gemini_model = cfg.get("gemini_model", "gemini-3.5-flash") # Standardized flagship: low-latency + defensive theta GA model
         self._verdicts: list = []
         self._ready = False
         # Channels that definitively had no recent video (stop fetching them).
