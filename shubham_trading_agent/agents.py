@@ -1474,26 +1474,74 @@ class PositionManagementAgent:
                 current_price = max(0.0, float(current_price) - float(short_price))
             # If short LTP is unavailable, fall back to long LTP only (conservative).
 
-        # 2B. Free-Ride Break-Even Trail (protecting wins from turning red)
+        # 2B. Multi-Stage Step-Trail Stop-Loss System (protecting wins from turning red)
         rm_cfg = self.config.get("risk_management") or {}
-        if rm_cfg.get("enable_freeride_trail", False) and not self.active_trade.get("_freeride_hit", False):
+        if rm_cfg.get("enable_step_trail", False):
             entry_price = float(self.active_trade["entry_price"])
-            trigger_pct = float(rm_cfg.get("freeride_trigger_percent", 15.0)) / 100.0
-            sl_pct = float(rm_cfg.get("freeride_sl_percent", 2.0)) / 100.0
+            step_cfg = rm_cfg.get("step_trail") or {}
             
-            if current_price >= entry_price * (1.0 + trigger_pct):
-                freeride_sl = entry_price * (1.0 + sl_pct)
-                self.active_trade["_freeride_hit"] = True
-                self.active_trade["initial_stop_loss"] = max(float(self.active_trade["initial_stop_loss"]), freeride_sl)
-                self.active_trade["trailing_stop_loss"] = max(float(self.active_trade.get("trailing_stop_loss", 0.0)), freeride_sl)
+            # Retrieve trigger/SL steps (percentages converted to fractions)
+            trig_1 = float(step_cfg.get("trigger_1", 10.0)) / 100.0
+            sl_1   = float(step_cfg.get("sl_1", 2.0)) / 100.0
+            
+            trig_2 = float(step_cfg.get("trigger_2", 15.0)) / 100.0
+            sl_2   = float(step_cfg.get("sl_2", 5.0)) / 100.0
+            
+            trig_3 = float(step_cfg.get("trigger_3", 20.0)) / 100.0
+            sl_3   = float(step_cfg.get("sl_3", 10.0)) / 100.0
+            
+            trig_4 = float(step_cfg.get("trigger_4", 30.0)) / 100.0
+            sl_4   = float(step_cfg.get("sl_4", 15.0)) / 100.0
+            
+            trig_5 = float(step_cfg.get("trigger_5", 50.0)) / 100.0
+            sl_5   = float(step_cfg.get("sl_5", 25.0)) / 100.0
+            
+            new_sl_target = None
+            step_level = None
+            
+            # Check highest step first to avoid downgrade logic
+            if current_price >= entry_price * (1.0 + trig_5) and not self.active_trade.get("_step_5_hit", False):
+                new_sl_target = entry_price * (1.0 + sl_5)
+                self.active_trade["_step_5_hit"] = True
+                self.active_trade["_step_4_hit"] = True
+                self.active_trade["_step_3_hit"] = True
+                self.active_trade["_step_2_hit"] = True
+                self.active_trade["_step_1_hit"] = True
+                step_level = "Step 5"
+            elif current_price >= entry_price * (1.0 + trig_4) and not self.active_trade.get("_step_4_hit", False):
+                new_sl_target = entry_price * (1.0 + sl_4)
+                self.active_trade["_step_4_hit"] = True
+                self.active_trade["_step_3_hit"] = True
+                self.active_trade["_step_2_hit"] = True
+                self.active_trade["_step_1_hit"] = True
+                step_level = "Step 4"
+            elif current_price >= entry_price * (1.0 + trig_3) and not self.active_trade.get("_step_3_hit", False):
+                new_sl_target = entry_price * (1.0 + sl_3)
+                self.active_trade["_step_3_hit"] = True
+                self.active_trade["_step_2_hit"] = True
+                self.active_trade["_step_1_hit"] = True
+                step_level = "Step 3"
+            elif current_price >= entry_price * (1.0 + trig_2) and not self.active_trade.get("_step_2_hit", False):
+                new_sl_target = entry_price * (1.0 + sl_2)
+                self.active_trade["_step_2_hit"] = True
+                self.active_trade["_step_1_hit"] = True
+                step_level = "Step 2"
+            elif current_price >= entry_price * (1.0 + trig_1) and not self.active_trade.get("_step_1_hit", False):
+                new_sl_target = entry_price * (1.0 + sl_1)
+                self.active_trade["_step_1_hit"] = True
+                step_level = "Step 1"
+                
+            if new_sl_target is not None:
+                # Lock the tighter SL
+                self.active_trade["initial_stop_loss"] = max(float(self.active_trade["initial_stop_loss"]), new_sl_target)
+                self.active_trade["trailing_stop_loss"] = max(float(self.active_trade.get("trailing_stop_loss", 0.0)), new_sl_target)
                 logging.info(
-                    f"[FreeRide-Trail] Premium reached +{trigger_pct*100:.1f}% "
-                    f"(Current={current_price:.2f} >= Trigger={entry_price * (1.0 + trigger_pct):.2f}). "
-                    f"SL moved to +{sl_pct*100:.1f}% (₹{freeride_sl:.2f}) to lock breakeven + fees."
+                    f"[StepTrail] {step_level} triggered! Premium={current_price:.2f} "
+                    f"(Entry={entry_price:.2f}). Stop-Loss trailed up to ₹{new_sl_target:.2f}."
                 )
                 self._save_state()
                 if not is_paper_trade and self.active_trade.get("sl_order_id"):
-                    await self._maybe_modify_broker_sl(freeride_sl)
+                    await self._maybe_modify_broker_sl(new_sl_target)
 
         # Rule 1: Pure Time-Based "Dead Trade" Kill Switch
         entry_time_str = self.active_trade.get("entry_time")

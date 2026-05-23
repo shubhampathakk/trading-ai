@@ -76,11 +76,20 @@ risk_management:
   # Disabled by default — opt in by setting enable_weekly_loss_limit: true.
   enable_weekly_loss_limit: false
   max_weekly_loss_percent: 5.0
-  # Free-Ride Break-Even Trail: immediately move stop-loss to cover fees
-  # once option premium hits +15% profit, protecting winning trades from turning red.
-  enable_freeride_trail: true
-  freeride_trigger_percent: 15.0
-  freeride_sl_percent: 2.0
+  # Step-Trail Stop-Loss System: moves stop-loss up in rigid steps as profit grows.
+  # Works for both 1-lot (single contract) and multi-lot strategies.
+  enable_step_trail: true
+  step_trail:
+    trigger_1: 10.0    # Step 1: profit hits +10%, SL moves to +2% (cover fees)
+    sl_1: 2.0
+    trigger_2: 15.0    # Step 2: profit hits +15%, SL moves to +5%
+    sl_2: 5.0
+    trigger_3: 20.0    # Step 3: profit hits +20%, SL moves to +10%
+    sl_3: 10.0
+    trigger_4: 30.0    # Step 4: profit hits +30%, SL moves to +15%
+    sl_4: 15.0
+    trigger_5: 50.0    # Step 5: profit hits +50%, SL moves to +25%
+    sl_5: 25.0
 strategy_signals:
   use_cpr_breakout: true
   use_ema_20_crossover: true
