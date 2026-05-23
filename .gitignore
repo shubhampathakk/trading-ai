@@ -20,7 +20,7 @@ shubham_trading_agent/ngrok
 mcp_helpers/ngrok
 mcp_helpers/__pycache__
 shubham_trading_agent/__pycache__
-tests
+test
 
 # OS & IDE files
 .DS_Store

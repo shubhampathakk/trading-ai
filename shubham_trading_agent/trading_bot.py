@@ -227,6 +227,9 @@ class TradingBotOrchestrator:
         self.tick_cache = {}             # Local in-memory cache (maps token string -> tick dict)
         self.kws = None                  # KiteTicker background websocket client
         self.subscribed_tokens = set()   # Set of subscribed integer tokens
+        self._rest_fallback_count = 0
+        self._rest_fallback_window_start = time.time()
+        self._rest_circuit_broken = False
         # Sentiment + NL-prompt cache. Captured ONCE on first setup; reused on
         # every reassessment unless the market has materially shifted (drift in
         # spot / VIX / automated news-sentiment regime).
@@ -394,6 +397,9 @@ class TradingBotOrchestrator:
         High-performance, 0ms network latency pricing checker (Phase 1).
         Queries the threaded tick cache first, falling back dynamically to the
         REST HTTP API if the tick cache is empty or stale.
+        
+        Includes a circuit breaker to prevent hammering Zerodha REST API rate limits
+        if the WebSocket fails.
         """
         if not token:
             return None
@@ -405,8 +411,34 @@ class TradingBotOrchestrator:
         if tick and (now - tick["timestamp"]).total_seconds() < 3.0:
             return tick["ltp"]
 
+        # REST rate limiter / circuit breaker check
+        now_ts = time.time()
+        if now_ts - self._rest_fallback_window_start > 60.0:
+            self._rest_fallback_count = 0
+            self._rest_fallback_window_start = now_ts
+            self._rest_circuit_broken = False
+
+        if self._rest_circuit_broken:
+            logging.error("[WebSocket-Fallback] REST fallback BLOCKED by circuit breaker (API rate limit protection).")
+            return None
+
         try:
-            logging.warning(f"[WebSocket-Fallback] Cache stale/missing for token {token}; polling REST API...")
+            self._rest_fallback_count += 1
+            if self._rest_fallback_count > 15:  # Max 15 REST fallbacks per minute
+                self._rest_circuit_broken = True
+                logging.critical("[WebSocket-Fallback] CIRCUIT BREAKER TRIGGERED: >15 REST fallbacks in 60 seconds! Silently dropping subsequent fallbacks to protect Zerodha API limits.")
+                
+                # Dynamically trigger dynamic WebSocket reconnection force-refresh
+                if self.kws is not None:
+                    logging.warning("[WebSocket-Fallback] Attempting dynamic WebSocket reconnection force-refresh...")
+                    try:
+                        self.kws.close()
+                        self.kws.connect(threaded=True)
+                    except Exception as reconnect_err:
+                        logging.error(f"[WebSocket-Fallback] Reconnection force-refresh failed: {reconnect_err}")
+                return None
+
+            logging.warning(f"[WebSocket-Fallback] Cache stale/missing for token {token} (REST fallback count={self._rest_fallback_count}); polling REST API...")
             data = await asyncio.to_thread(self.kite.ltp, token_str)
             ltp = float((data or {}).get(token_str, {}).get('last_price', 0))
             
@@ -2544,7 +2576,14 @@ class TradingBotOrchestrator:
                                     )
                                     if trade_details:
                                         trade_details['Strategy'] = self.active_strategy_name
-                                        self.log_activity(f"🛒 Position Entered: {trade_details['symbol']} Qty={trade_details['quantity']} @ ₹{trade_details['entry_price']:.2f}")
+                                        vix_val = 0.0
+                                        try:
+                                            _vix_tok = self.market_condition_identifier.vix_token
+                                            vix_val = await self._get_live_ltp(_vix_tok) or 0.0
+                                        except Exception:
+                                            pass
+                                        trade_details['vix_at_entry'] = vix_val
+                                        self.log_activity(f"🛒 Position Entered: {trade_details['symbol']} Qty={trade_details['quantity']} @ ₹{trade_details['entry_price']:.2f} (VIX={vix_val:.2f})")
                                         self.position_agent.start_trade(trade_details)
                                         if not is_paper:
                                             await self.position_agent.attach_broker_stop_loss(self.order_agent)

@@ -1675,10 +1675,18 @@ class PositionManagementAgent:
         t2_gain = float(flags.get('_agg_t2_gain_pct', pe_cfg.get('t2_gain_pct', 60))) / 100.0
 
         # Base trail priority: scalp mode (tightest) → aggressive mode (widest) → static config.
+        vix = self.active_trade.get("vix_at_entry", 0.0) or 0.0
+        vix_scale = 1.0
+        if vix > 0.0:
+            if vix < 13.0:
+                vix_scale = 0.75
+            elif vix > 20.0:
+                vix_scale = 1.25
+
         if flags.get('_scalp_mode'):
             base_pct = float(flags.get('_scalp_trail_pct', 10.0))
         else:
-            base_pct = float(flags.get('_agg_trail_pct') or self.tsl_config.get('percentage', 15.0))
+            base_pct = float(flags.get('_agg_trail_pct') or self.tsl_config.get('percentage', 15.0)) * vix_scale
 
         entry = float(self.active_trade.get('entry_price', 0) or 0)
         if entry <= 0:
@@ -1849,13 +1857,21 @@ class PositionManagementAgent:
         remaining   = int(trade.get('quantity', 0))
 
         # Target priority: scalp mode (tightest) → aggressive mode (widest) → static config.
+        vix = trade.get("vix_at_entry", 0.0) or 0.0
+        vix_scale = 1.0
+        if vix > 0.0:
+            if vix < 13.0:
+                vix_scale = 0.75
+            elif vix > 20.0:
+                vix_scale = 1.25
+
         if flags.get('_scalp_mode'):
             t1_pct  = float(flags.get('_scalp_t1_gain_pct', 15)) / 100.0
             t2_pct  = float(flags.get('_scalp_t2_gain_pct', 25)) / 100.0
         else:
             # In AGGRESSIVE mode, let winners run further before booking partials.
-            t1_pct  = float(flags.get('_agg_t1_gain_pct', pe_cfg.get('t1_gain_pct', 30))) / 100.0
-            t2_pct  = float(flags.get('_agg_t2_gain_pct', pe_cfg.get('t2_gain_pct', 60))) / 100.0
+            t1_pct  = (float(flags.get('_agg_t1_gain_pct', pe_cfg.get('t1_gain_pct', 30))) * vix_scale) / 100.0
+            t2_pct  = (float(flags.get('_agg_t2_gain_pct', pe_cfg.get('t2_gain_pct', 60))) * vix_scale) / 100.0
         t1_frac     = float(pe_cfg.get('t1_exit_pct', 40)) / 100.0
         t2_frac     = float(pe_cfg.get('t2_exit_pct', 40)) / 100.0
 
@@ -2168,6 +2184,26 @@ class PositionManagementAgent:
                 completed["Rationale"] = await self.analyze_losing_trade(
                     completed, underlying_df, sentiment_agent, gemini_api_key
                 )
+                # Save loss lesson for self-healing RAG (Enhancement 1)
+                if completed.get("Rationale"):
+                    try:
+                        from infra import read_json, atomic_write_json, state_path
+                        lessons_file = state_path("loss_lessons.json")
+                        lessons = read_json(lessons_file, default=[])
+                        if not isinstance(lessons, list):
+                            lessons = []
+                        lessons.append({
+                            "strategy": completed.get("Strategy", "N/A"),
+                            "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                            "pnl": float(completed.get("ProfitLoss", 0.0)),
+                            "rationale": completed.get("Rationale")
+                        })
+                        if len(lessons) > 30:
+                            lessons = lessons[-30:]
+                        atomic_write_json(lessons_file, lessons)
+                        logging.info("[Self-Healing RAG] Persisted loss lesson to state/loss_lessons.json.")
+                    except Exception as lesson_exc:
+                        logging.error(f"[Self-Healing RAG] Failed to persist loss lesson: {lesson_exc}")
             except Exception as e:
                 logging.warning(f"Loss-analysis skipped: {e}")
 
@@ -2183,6 +2219,17 @@ class PositionManagementAgent:
         if entry_price == 0:
             return 0, 0
         sl_pct = float(self.flags.get("stop_loss_percent", 25.0))
+        
+        # VIX Dynamic Scaling (Enhancement 2)
+        vix = self.active_trade.get("vix_at_entry", 0.0) or 0.0
+        vix_scale = 1.0
+        if vix > 0.0:
+            if vix < 13.0:
+                vix_scale = 0.75
+            elif vix > 20.0:
+                vix_scale = 1.25
+                
+        sl_pct = sl_pct * vix_scale
         min_pts = float(self.flags.get("min_stop_loss_points", 2.0))
         risk_per_share = max(entry_price * (sl_pct / 100.0), min_pts)
         return entry_price - risk_per_share, risk_per_share

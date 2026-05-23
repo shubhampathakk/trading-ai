@@ -118,6 +118,22 @@ class RAGService:
                 f"AvgP/L={s['avg_pnl']:,.2f}, TotalP/L={s['total_pnl']:,.2f}, "
                 f"Score={s['score']:.2f}"
             )
+
+        # Retrieve self-healing past loss lessons (Enhancement 1)
+        try:
+            from infra import read_json, state_path
+            lessons_file = state_path("loss_lessons.json")
+            lessons = read_json(lessons_file, default=[])
+            if isinstance(lessons, list) and lessons:
+                strategy_names = set(stats.keys())
+                filtered_lessons = [l for l in lessons if l.get("strategy") in strategy_names]
+                if filtered_lessons:
+                    lines.append("\nCRITICAL: Past Gemini Loss Lessons (Self-Healing RAG):")
+                    for l in filtered_lessons[-5:]:  # past 5 lessons
+                        lines.append(f"- '{l['strategy']}' (Loss on {l['date']}): {l['rationale']}")
+        except Exception as e:
+            logging.debug(f"[RAGService] Failed to fetch loss lessons context: {e}")
+
         context = "\n".join(lines)
         logging.debug(f"[RAGService] Generated context:\n{context}")
         return context
