@@ -76,6 +76,11 @@ risk_management:
   # Disabled by default — opt in by setting enable_weekly_loss_limit: true.
   enable_weekly_loss_limit: false
   max_weekly_loss_percent: 5.0
+  # Free-Ride Break-Even Trail: immediately move stop-loss to cover fees
+  # once option premium hits +15% profit, protecting winning trades from turning red.
+  enable_freeride_trail: true
+  freeride_trigger_percent: 15.0
+  freeride_sl_percent: 2.0
 strategy_signals:
   use_cpr_breakout: true
   use_ema_20_crossover: true

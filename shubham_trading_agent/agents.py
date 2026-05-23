@@ -1474,6 +1474,27 @@ class PositionManagementAgent:
                 current_price = max(0.0, float(current_price) - float(short_price))
             # If short LTP is unavailable, fall back to long LTP only (conservative).
 
+        # 2B. Free-Ride Break-Even Trail (protecting wins from turning red)
+        rm_cfg = self.config.get("risk_management") or {}
+        if rm_cfg.get("enable_freeride_trail", False) and not self.active_trade.get("_freeride_hit", False):
+            entry_price = float(self.active_trade["entry_price"])
+            trigger_pct = float(rm_cfg.get("freeride_trigger_percent", 15.0)) / 100.0
+            sl_pct = float(rm_cfg.get("freeride_sl_percent", 2.0)) / 100.0
+            
+            if current_price >= entry_price * (1.0 + trigger_pct):
+                freeride_sl = entry_price * (1.0 + sl_pct)
+                self.active_trade["_freeride_hit"] = True
+                self.active_trade["initial_stop_loss"] = max(float(self.active_trade["initial_stop_loss"]), freeride_sl)
+                self.active_trade["trailing_stop_loss"] = max(float(self.active_trade.get("trailing_stop_loss", 0.0)), freeride_sl)
+                logging.info(
+                    f"[FreeRide-Trail] Premium reached +{trigger_pct*100:.1f}% "
+                    f"(Current={current_price:.2f} >= Trigger={entry_price * (1.0 + trigger_pct):.2f}). "
+                    f"SL moved to +{sl_pct*100:.1f}% (₹{freeride_sl:.2f}) to lock breakeven + fees."
+                )
+                self._save_state()
+                if not is_paper_trade and self.active_trade.get("sl_order_id"):
+                    await self._maybe_modify_broker_sl(freeride_sl)
+
         # Rule 1: Pure Time-Based "Dead Trade" Kill Switch
         entry_time_str = self.active_trade.get("entry_time")
         if entry_time_str:
@@ -1481,15 +1502,19 @@ class PositionManagementAgent:
                 # Parse the entry time and check elapsed minutes
                 entry_time = datetime.datetime.fromisoformat(entry_time_str)
                 elapsed_minutes = (datetime.datetime.now() - entry_time).total_seconds() / 60.0
-                if elapsed_minutes > 25.0 and current_price < self.active_trade.get("entry_price", 0.0):
+                
+                # Friday Theta Defense: tighten dead trade window from 25 to 15 minutes dynamically on Fridays
+                is_friday = datetime.datetime.now().weekday() == 4
+                dead_trade_limit = 15.0 if is_friday else 25.0
+                if elapsed_minutes > dead_trade_limit and current_price < self.active_trade.get("entry_price", 0.0):
                     logging.warning(
-                        f"[DeadTrade-KillSwitch] Position open for {elapsed_minutes:.1f} min (> 25m) "
+                        f"[DeadTrade-KillSwitch] Position open for {elapsed_minutes:.1f} min (> {dead_trade_limit:.0f}m) "
                         f"and premium P&L is negative (Current={current_price:.2f} < Entry={self.active_trade['entry_price']:.2f}). "
-                        f"Triggering time-based exit to cut theta decay drain!"
+                        f"Triggering time-based exit to cut {'Friday ' if is_friday else ''}theta decay drain!"
                     )
                     return await self.exit_trade(
                         is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key,
-                        exit_reason="Time-Based Dead-Trade Exit"
+                        exit_reason="Friday Time-Based Exit" if is_friday else "Time-Based Dead-Trade Exit"
                     )
             except Exception as e:
                 logging.debug(f"Time-based kill switch check failed: {e}")
