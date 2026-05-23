@@ -145,6 +145,15 @@ Index options (NIFTY, BANKNIFTY) feature immense liquidity, but individual stock
 Multi-leg credit spreads (like Bull Put spreads or Bear Call spreads) must be closed atomically. If the long leg fills but the short leg fails, the trader is exposed to unlimited short option risk.
 *   **The Safeguard**: [`agents.py:L1994-2018`](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent/agents.py#L1994-L2018) tracks partial exits on the exchange. If the long leg fills but the short leg fails, the position manager cancels the failed leg, updates `active_trade.json` dynamically to manage the short contract as a naked short, and attempts clean cover/squares-off in the next tick.
 
+### 🚀 4. Threaded WebSocket Tick Cache (0ms Latency Pricing)
+*   **The Feature**: Evaluates all pricing gates (trailing stop loss ticks, profit targets, and cutoffs) locally inside RAM rather than requesting LTPs over the web.
+*   **How it works**: Spins up Zerodha's `KiteTicker` client on a dedicated background thread. Real-time tick updates are mapped dynamically to a thread-safe `self.tick_cache` in memory. `safe_ltp()` in `infra.py` queries this cache first, eliminating REST latency and API limit blocks entirely.
+
+### ⏱️ 5. Options Buying Capital-Shield Guardrails
+*   **Rule 1: 25-Minute \"Dead Trade\" Switch**: Exits any long position held for more than 25 minutes if premium P&L is negative, cutting flat trades early to prevent silent theta decay.
+*   **Rule 2: Daily Stop-Loss Circuit Breaker**: Halts all trading for the rest of the session immediately if a trade hits the 25% stop-loss, shielding principal cash from consecutive whipsaw drawdowns.
+*   **Rule 3: Morning Volatility Cool-Down Lockout (09:15 - 09:30 AM)**: Restricts evaluations and orders during the opening 15 minutes to let inflated morning IV and stop-loss hunting whipsaws settle down.
+
 ---
 
 ## 💸 Multi-Leg Option Selling Engine

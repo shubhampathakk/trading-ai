@@ -141,6 +141,7 @@ class TradingBotOrchestrator:
     def __init__(self, config):
         self.config = config
         self.kite = KiteConnect(api_key=config['zerodha']['api_key'], timeout=10, debug=True)
+        self.kite.orchestrator = self
         self.active_strategy_name = "None"
         self.active_strategy = None
 
@@ -220,6 +221,12 @@ class TradingBotOrchestrator:
         self._pcr_data: dict = {}
         # Track whether the bot should fail-stop on the next iteration (e.g. token expiry).
         self._abort = False
+        self.trading_allowed_today = True
+        
+        # Threaded WebSocket Tick Cache variables (Phase 1)
+        self.tick_cache = {}             # Local in-memory cache (maps token string -> tick dict)
+        self.kws = None                  # KiteTicker background websocket client
+        self.subscribed_tokens = set()   # Set of subscribed integer tokens
         # Sentiment + NL-prompt cache. Captured ONCE on first setup; reused on
         # every reassessment unless the market has materially shifted (drift in
         # spot / VIX / automated news-sentiment regime).
@@ -272,6 +279,12 @@ class TradingBotOrchestrator:
                 self.position_agent.orchestrator = self
                 self.pcr_feed = PCRFeed(self.kite, self.config)
                 logging.info("Agents initialized successfully.")
+                
+                # Dynamic WebSocket Ticker initialization & Dynamic Index Subscriptions
+                self.subscribed_tokens.add(int(self.order_agent.underlying_token))
+                self.subscribed_tokens.add(int(self.order_agent.signal_data_token))
+                self._start_websocket_ticker()
+                
                 return True
             except Exception as e:
                 logging.warning(f"Cached session token invalid or expired ({e}). Proceeding to fresh login.")
@@ -304,10 +317,105 @@ class TradingBotOrchestrator:
             self.pcr_feed = PCRFeed(self.kite, self.config)
             logging.info("Agents initialized successfully.")
             
+            # Dynamic WebSocket Ticker initialization & Dynamic Index Subscriptions
+            self.subscribed_tokens.add(int(self.order_agent.underlying_token))
+            self.subscribed_tokens.add(int(self.order_agent.signal_data_token))
+            self._start_websocket_ticker()
+            
             return True
         except Exception as e:
             logging.error(f"Authentication failed: {e}", exc_info=True)
             return False
+
+    def _start_websocket_ticker(self):
+        """Initializes the threaded KiteTicker WebSocket connection and callbacks."""
+        if self.config.get("trading_flags", {}).get("paper_trading", True) and os.environ.get("MOCK_TRADE", "false").lower() == "true":
+            logging.info("[WebSocket] Mock/offline trading active; skipping KiteTicker background loop.")
+            return
+
+        api_key = self.config["zerodha"]["api_key"]
+        access_token = self.config["zerodha"]["access_token"]
+
+        if not api_key or not access_token or "${" in api_key or "${" in access_token:
+            logging.warning("[WebSocket] Valid ZERODHA_API_KEY or ACCESS_TOKEN missing; ticker will run in offline fallback.")
+            return
+
+        from kiteconnect import KiteTicker
+        self.kws = KiteTicker(api_key, access_token)
+
+        def on_ticks(ws, ticks):
+            for tick in ticks:
+                token = tick.get("instrument_token")
+                if token:
+                    self.tick_cache[str(token)] = {
+                        "ltp": float(tick.get("last_price") or 0),
+                        "volume": int(tick.get("volume_traded") or 0),
+                        "ohlc": tick.get("ohlc", {}),
+                        "timestamp": datetime.datetime.now()
+                    }
+
+        def on_connect(ws, response):
+            logging.info("[WebSocket] Connected successfully to Zerodha Ticker.")
+            if self.subscribed_tokens:
+                tokens = list(self.subscribed_tokens)
+                ws.subscribe(tokens)
+                ws.set_mode(ws.MODE_FULL, tokens)
+                logging.info(f"[WebSocket] Subscribed to active instruments: {tokens}")
+
+        def on_close(ws, code, reason):
+            logging.warning(f"[WebSocket] Connection closed: code={code} reason={reason}")
+
+        def on_error(ws, code, reason):
+            logging.error(f"[WebSocket] Connection error: code={code} reason={reason}")
+
+        self.kws.on_ticks = on_ticks
+        self.kws.on_connect = on_connect
+        self.kws.on_close = on_close
+        self.kws.on_error = on_error
+
+        logging.info("[WebSocket] Connecting to Zerodha Kite Ticker daemon thread...")
+        self.kws.connect(threaded=True)
+
+    def subscribe_token(self, token: int):
+        """Subscribes the ticker thread to a new instrument token dynamically."""
+        if not token:
+            return
+        self.subscribed_tokens.add(int(token))
+        if self.kws is not None and self.kws.is_connected():
+            try:
+                self.kws.subscribe([int(token)])
+                self.kws.set_mode(self.kws.MODE_FULL, [int(token)])
+                logging.info(f"[WebSocket] Subscribed dynamically to token: {token} (modeFull)")
+            except Exception as e:
+                logging.error(f"[WebSocket] Subscription failed for token {token}: {e}")
+
+    async def _get_live_ltp(self, token: int) -> float | None:
+        """
+        High-performance, 0ms network latency pricing checker (Phase 1).
+        Queries the threaded tick cache first, falling back dynamically to the
+        REST HTTP API if the tick cache is empty or stale.
+        """
+        if not token:
+            return None
+
+        token_str = str(token)
+        tick = self.tick_cache.get(token_str)
+        now = datetime.datetime.now()
+
+        if tick and (now - tick["timestamp"]).total_seconds() < 3.0:
+            return tick["ltp"]
+
+        try:
+            logging.warning(f"[WebSocket-Fallback] Cache stale/missing for token {token}; polling REST API...")
+            data = await asyncio.to_thread(self.kite.ltp, token_str)
+            ltp = float((data or {}).get(token_str, {}).get('last_price', 0))
+            
+            self.subscribe_token(token)
+            
+            return ltp if ltp > 0 else None
+        except Exception as e:
+            logging.error(f"[WebSocket-Fallback] REST fallback failed for token {token}: {e}")
+            return None
 
     async def _validate_token(self) -> bool:
         """
@@ -527,9 +635,8 @@ class TradingBotOrchestrator:
         if self._sentiment_baseline_spot and self.order_agent is not None:
             try:
                 token = self.order_agent.underlying_token
-                data = await asyncio.to_thread(self.kite.ltp, str(token))
-                spot_now = float((data or {}).get(str(token), {}).get('last_price', 0))
-                if spot_now > 0:
+                spot_now = await self._get_live_ltp(token)
+                if spot_now is not None and spot_now > 0:
                     pct = abs(spot_now - self._sentiment_baseline_spot) / self._sentiment_baseline_spot * 100.0
                     if pct >= spot_thresh:
                         reasons.append(
@@ -545,9 +652,8 @@ class TradingBotOrchestrator:
         if self._sentiment_baseline_vix and self.market_condition_identifier:
             try:
                 vix_token = self.market_condition_identifier.vix_token
-                data = await asyncio.to_thread(self.kite.ltp, str(vix_token))
-                vix_now = float((data or {}).get(str(vix_token), {}).get('last_price', 0))
-                if vix_now > 0:
+                vix_now = await self._get_live_ltp(vix_token)
+                if vix_now is not None and vix_now > 0:
                     pct = abs(vix_now - self._sentiment_baseline_vix) / self._sentiment_baseline_vix * 100.0
                     if pct >= vix_thresh:
                         reasons.append(
@@ -584,20 +690,14 @@ class TradingBotOrchestrator:
         try:
             if self.order_agent is not None:
                 token = self.order_agent.underlying_token
-                data = await asyncio.to_thread(self.kite.ltp, str(token))
-                self._sentiment_baseline_spot = float(
-                    (data or {}).get(str(token), {}).get('last_price', 0) or 0
-                ) or None
+                self._sentiment_baseline_spot = await self._get_live_ltp(token)
         except Exception as e:
             logging.debug(f"Could not snapshot baseline spot: {e}")
             self._sentiment_baseline_spot = None
         try:
             if self.market_condition_identifier is not None:
                 vix_token = self.market_condition_identifier.vix_token
-                data = await asyncio.to_thread(self.kite.ltp, str(vix_token))
-                self._sentiment_baseline_vix = float(
-                    (data or {}).get(str(vix_token), {}).get('last_price', 0) or 0
-                ) or None
+                self._sentiment_baseline_vix = await self._get_live_ltp(vix_token)
         except Exception as e:
             logging.debug(f"Could not snapshot baseline VIX: {e}")
             self._sentiment_baseline_vix = None
@@ -942,9 +1042,8 @@ class TradingBotOrchestrator:
             return False
         try:
             vix_token = self.market_condition_identifier.vix_token
-            ltp_data = await asyncio.to_thread(self.kite.ltp, str(vix_token))
-            vix = ltp_data[str(vix_token)]['last_price']
-            if vix > max_vix:
+            vix = await self._get_live_ltp(vix_token)
+            if vix is not None and vix > max_vix:
                 logging.warning(f"VIX gate: {vix:.2f} > max {max_vix}. Blocking new entries.")
                 return True
         except Exception as e:
@@ -969,6 +1068,14 @@ class TradingBotOrchestrator:
         """
         flags = self.config['trading_flags']
         now = datetime.datetime.now().time()
+
+        # Rule 3: Morning Volatility Cool-Down Gate Lockout (09:15 AM - 09:30 AM)
+        if datetime.time(9, 15) <= now < datetime.time(9, 30):
+            return "Morning Volatility Cool-Down Gate Lockout (09:15 - 09:30 AM)"
+
+        # Rule 2: Daily Circuit Breaker (Max 1 Loss Per Day)
+        if not self.trading_allowed_today:
+            return "Daily Stop-Loss Circuit Breaker Active (Max 1 Loss Per Day)"
 
         start = self.effective_entry_start_time or self._parse_hhmm(flags.get('entry_start_time'))
         if start and now < start:
@@ -1037,8 +1144,7 @@ class TradingBotOrchestrator:
                         prev = df[df['date'] < today].tail(1)
                         if not prev.empty:
                             prev_close = float(prev.iloc[0]['close'])
-                            ltp_data = await asyncio.to_thread(self.kite.ltp, str(token))
-                            ltp = ltp_data[str(token)]['last_price']
+                            ltp = await self._get_live_ltp(token)
                             signed_gap_pct = (ltp - prev_close) / prev_close * 100.0
                             # Stash signed gap for the strategy selector (Layer 2).
                             self.open_gap_pct = signed_gap_pct
@@ -1274,8 +1380,7 @@ class TradingBotOrchestrator:
                 vix_val = 14.2
                 try:
                     _vix_tok = self.market_condition_identifier.vix_token
-                    _vix_data = await asyncio.to_thread(self.kite.ltp, str(_vix_tok))
-                    vix_val = float((_vix_data or {}).get(str(_vix_tok), {}).get('last_price', 14.2))
+                    vix_val = await self._get_live_ltp(_vix_tok) or 14.2
                 except Exception:
                     pass
                 fii_dii_data = fetch_fii_dii_activity(vix_value=vix_val)
@@ -1385,8 +1490,7 @@ class TradingBotOrchestrator:
             _vix_for_mode = 0.0
             try:
                 _vix_tok = self.market_condition_identifier.vix_token
-                _vix_data = await asyncio.to_thread(self.kite.ltp, str(_vix_tok))
-                _vix_for_mode = float((_vix_data or {}).get(str(_vix_tok), {}).get('last_price', 0))
+                _vix_for_mode = await self._get_live_ltp(_vix_tok) or 0.0
             except Exception:
                 pass
             self._trading_mode = self.rag_service.get_trading_mode(vix_value=_vix_for_mode)

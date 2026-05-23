@@ -45,9 +45,31 @@ def run_backtest(kite, config, strategy_name, from_date, to_date, target_conditi
     timeframe = config['trading_flags']['chart_timeframe']
     
     try:
-        nifty_token = [i['instrument_token'] for i in kite.instruments('NSE') if i['tradingsymbol'] == underlying_name][0]
+        # Map index spot names to their respective exchange derivative roots
+        indices_roots = {
+            "NIFTY 50": "NIFTY", 
+            "NIFTY BANK": "BANKNIFTY", 
+            "FINNIFTY": "FINNIFTY", 
+            "MIDCPNIFTY": "MIDCPNIFTY", 
+            "SENSEX": "SENSEX"
+        }
+        if underlying_name in indices_roots:
+            root = indices_roots[underlying_name]
+            nfo_insts = pd.DataFrame(kite.instruments('NFO'))
+            today = datetime.date.today()
+            nfo_insts['expiry_date'] = pd.to_datetime(nfo_insts['expiry']).dt.date
+            futures = nfo_insts[
+                (nfo_insts["name"] == root) & 
+                (nfo_insts["instrument_type"] == "FUT") & 
+                (nfo_insts["expiry_date"] >= today)
+            ].sort_values("expiry_date")
+            nifty_token = int(futures.iloc[0]["instrument_token"])
+            logging.info(f"Backtest: dynamically resolved Index {underlying_name} to Futures token {nifty_token} for volume-backed indicators.")
+        else:
+            nifty_token = [i['instrument_token'] for i in kite.instruments('NSE') if i['tradingsymbol'] == underlying_name][0]
+            
         vix_token = [i['instrument_token'] for i in kite.instruments('NSE') if i['tradingsymbol'] == 'INDIA VIX'][0]
-    except (IndexError, KeyError) as e:
+    except Exception as e:
         logging.error(f"Could not find instrument token: {e}"); return 0.0
 
     all_data_day = fetch_historical_data_in_chunks(kite, nifty_token, from_date, to_date, "day")
@@ -113,18 +135,29 @@ def run_backtest(kite, config, strategy_name, from_date, to_date, target_conditi
         day_tf_df['spread'] = day_tf_df['high'] - day_tf_df['low']
         day_tf_df['volume_ma'] = day_tf_df['volume'].rolling(window=20).mean()
         
+        # Ensure 'vwap' and 'rsi' exist in lowercase to match live strategy expectations
+        for col in list(day_tf_df.columns):
+            if 'vwap' in col.lower() and col != 'vwap':
+                day_tf_df['vwap'] = day_tf_df[col]
+            if 'rsi' in col.lower() and col != 'rsi':
+                day_tf_df['rsi'] = day_tf_df[col]
+        
+        
         sentiment = "Bullish"
         position = None
         for j in range(20, len(day_tf_df)):
             if not position:
-                signal = strategy.generate_signals(day_tf_df, j, sentiment, cpr_pivots=cpr_pivots)
+                signal = strategy.generate_signals(day_tf_df, sentiment, index=j, cpr_pivots=cpr_pivots)
                 if signal != 'HOLD':
                     position, entry_price = signal, day_tf_df.iloc[j]['close']
             else:
                 if (position == 'BUY' and day_tf_df.iloc[j]['low'] < entry_price * 0.98) or \
                    (position == 'SELL' and day_tf_df.iloc[j]['high'] > entry_price * 1.02):
                     trades.append({'entry': entry_price, 'exit': day_tf_df.iloc[j]['close'], 'type': position})
-                    position = None
+        # Force close any remaining position at the end of the trading day (intraday square-off)
+        if position:
+            trades.append({'entry': entry_price, 'exit': day_tf_df.iloc[-1]['close'], 'type': position})
+            position = None
     
     if not trades:
         logging.warning(f"No trades were executed during {mode} backtest for {strategy_name}."); return 0.0

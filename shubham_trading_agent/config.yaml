@@ -117,7 +117,7 @@ trading_flags:
   paper_trading: false
   product_type: MIS
   rag_min_trading_days: 1
-  risk_per_trade_percent: 22.0
+  risk_per_trade_percent: 20.0
   run_startup_backtest: false
   # Alignment note: backtest_years drives the date range only when
   # run_startup_backtest is true. The bot will auto-align the window to

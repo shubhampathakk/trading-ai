@@ -1474,6 +1474,26 @@ class PositionManagementAgent:
                 current_price = max(0.0, float(current_price) - float(short_price))
             # If short LTP is unavailable, fall back to long LTP only (conservative).
 
+        # Rule 1: Pure Time-Based "Dead Trade" Kill Switch
+        entry_time_str = self.active_trade.get("entry_time")
+        if entry_time_str:
+            try:
+                # Parse the entry time and check elapsed minutes
+                entry_time = datetime.datetime.fromisoformat(entry_time_str)
+                elapsed_minutes = (datetime.datetime.now() - entry_time).total_seconds() / 60.0
+                if elapsed_minutes > 25.0 and current_price < self.active_trade.get("entry_price", 0.0):
+                    logging.warning(
+                        f"[DeadTrade-KillSwitch] Position open for {elapsed_minutes:.1f} min (> 25m) "
+                        f"and premium P&L is negative (Current={current_price:.2f} < Entry={self.active_trade['entry_price']:.2f}). "
+                        f"Triggering time-based exit to cut theta decay drain!"
+                    )
+                    return await self.exit_trade(
+                        is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key,
+                        exit_reason="Time-Based Dead-Trade Exit"
+                    )
+            except Exception as e:
+                logging.debug(f"Time-based kill switch check failed: {e}")
+
         # 3. Hard time exit — never hold options past 14:30 IST.
         #    Theta and bid-ask spread widen sharply in the last 75 min.
         _hard_close_time = datetime.time(14, 30)
@@ -1544,7 +1564,8 @@ class PositionManagementAgent:
         if current_price <= hard or (trail and current_price <= trail):
             logging.info(f"Software SL hit for {symbol} @ {current_price:.2f}.")
             return await self.exit_trade(
-                is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key
+                is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key,
+                exit_reason="Stop-Loss Hit"
             )
 
         # 9. Indicator-based exit (PSAR / MA on the underlying).
@@ -1953,7 +1974,7 @@ class PositionManagementAgent:
         return current_ltp, order_id, False  # best-effort fallback
 
     async def exit_trade(self, is_paper_trade=False, underlying_df=None,
-                         sentiment_agent=None, gemini_api_key=None):
+                         sentiment_agent=None, gemini_api_key=None, exit_reason=None):
         if not self.active_trade:
             return None
         trade      = self.active_trade
@@ -1961,7 +1982,8 @@ class PositionManagementAgent:
         is_spread  = trade.get("is_spread", False)
         qty        = trade["quantity"]
         timeout    = int(self.flags.get("order_fill_timeout_seconds", 30))
-        exit_reason = "PAPER" if is_paper_trade else "INDICATOR_OR_SOFTWARE_SL"
+        if not exit_reason:
+            exit_reason = "PAPER" if is_paper_trade else "INDICATOR_OR_SOFTWARE_SL"
 
         long_ltp = safe_ltp(self.kite, f"NFO:{symbol}") or trade.get("entry_price", 0)
         exit_price = long_ltp
@@ -2062,6 +2084,11 @@ class PositionManagementAgent:
             "initial_stop_loss": trade.get("initial_stop_loss"),
             "lot_size": trade.get("lot_size"),
         }
+
+        # Rule 2: Daily Circuit Breaker (Max 1 Loss Per Day)
+        if pnl < 0 and "Stop-Loss" in exit_reason and getattr(self, "orchestrator", None) is not None:
+            self.orchestrator.trading_allowed_today = False
+            logging.error("❌ [Daily-SL-Breaker] A trade hit the stop-loss today! Halting all new entries for the remainder of the session.")
 
         if pnl < 0 and self.flags.get("enable_gemini_loss_analysis") and gemini_api_key:
             try:

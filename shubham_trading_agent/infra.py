@@ -141,6 +141,29 @@ def get_instrument_token(kite, tradingsymbol: str, exchange: str) -> int:
 def safe_ltp(kite, key: str) -> float | None:
     """Returns last_price for `key` (e.g. 'NFO:NIFTY24DEC24500CE') or None on any failure."""
     try:
+        import datetime
+        orchestrator = getattr(kite, "orchestrator", None)
+        if orchestrator is not None:
+            parts = key.split(":")
+            exchange = parts[0]
+            symbol = parts[1] if len(parts) > 1 else key
+            
+            try:
+                token = get_instrument_token(kite, symbol, exchange)
+                token_str = str(token)
+                tick = orchestrator.tick_cache.get(token_str)
+                now = datetime.datetime.now()
+                
+                # If cache exists and is fresh (under 3 seconds old), return it!
+                if tick and (now - tick["timestamp"]).total_seconds() < 3.0:
+                    return tick["ltp"]
+                else:
+                    # Proactively subscribe the token dynamically to the ticker background loop
+                    orchestrator.subscribe_token(token)
+            except Exception:
+                pass
+
+        # Fallback to Zerodha REST HTTP
         data = kite.ltp(key) or {}
         entry = data.get(key) or {}
         price = entry.get("last_price")

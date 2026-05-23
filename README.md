@@ -109,7 +109,11 @@ To ensure the platform is 100% robust, compliant, and safe to trade live on the 
 *   **0-DTE Gamma SL Widening**: Dynamically expands stop-loss thresholds by 1.5x on weekly options expiry days (0-DTE) to provide positions room to breathe through volatile gamma-driven whipsaws.
 *   **Batched LTP Fetching**: Fetches all option leg premiums in a single batched REST call, eliminating API rate limit issues and preventing price desynchronization inside fast-moving markets.
 
---- in its state files, ensuring subsequent cycles cover it cleanly.
+### 🚀 7. Sub-Millisecond WebSocket Caching & Pro Options Buying Guardrails
+*   **KiteTicker WebSocket Cache (0ms pricing checks)**: Fully integrated Zerodha's dynamic background-threaded `KiteTicker` stream. All LTP queries check this local memory cache first, dropping position trailing and exit latency to `0ms` and bypassing HTTP REST rate limits entirely.
+*   **Rule 1: The 25-Minute "Dead Trade" Switch**: Exits any long options contract held for more than 25 minutes if the net premium P&L is negative, saving you from silent theta decay during sideways consolidations.
+*   **Rule 2: Daily Circuit Breaker (Max 1 Loss Per Day)**: If a trade hits the 25% stop-loss, the bot automatically halts all further entries today to preserve principal capital.
+*   **Rule 3: Morning Volatility lockout gate (09:15 - 09:30 AM)**: Blocks all trade entries in the first 15 minutes of market open to let morning IV spikes and algorithmic whipsaws settle down.
 
 ---
 
