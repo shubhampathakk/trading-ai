@@ -173,7 +173,7 @@ trading_flags:
   # Hard new-entry cutoff. Professional rule: no new options entries after 13:30.
   # Theta and bid-ask spreads widen in the last 75 min before close.
   # Hard close of any open position at 14:00 is enforced in manage().
-  entry_cutoff_time: "13:30"
+  entry_cutoff_time: "14:30"
   early_entry_gap_threshold_percent: 0.4
   strike_offset_steps: 1
   # ── Professional profit + quality controls ─────────────────────────────────

@@ -1056,7 +1056,7 @@ class TradingBotOrchestrator:
             return 1.0
 
         now = datetime.datetime.now().time()
-        if now >= datetime.time(13, 30):
+        if now >= datetime.time(14, 30):
             return 0.0   # block — hard cutoff
         elif datetime.time(9, 30) <= now < datetime.time(10, 15):
             return 1.0   # prime: institutional open order flow
@@ -1064,8 +1064,8 @@ class TradingBotOrchestrator:
             return 1.0   # prime: second-impulse window
         elif datetime.time(10, 15) <= now < datetime.time(11, 30):
             return 0.75  # moderate: post-open consolidation
-        elif datetime.time(12, 30) <= now < datetime.time(13, 30):
-            return 0.50  # degraded: lunch drift
+        elif datetime.time(12, 30) <= now < datetime.time(14, 30):
+            return 0.50  # degraded: lunch & afternoon drift
         return 0.75      # pre-open edge case
 
     async def _is_vix_too_high(self) -> bool:
@@ -1562,7 +1562,7 @@ class TradingBotOrchestrator:
                 f"  Sentiment  : {self.day_sentiment}  │  Conditions: {_conds_str}",
                 f"  Mode       : {self._trading_mode}  │  Risk/trade: {eff_risk:.1f}%  │  Max trades: {_max_t}",
                 f"  Targets    : T1 +{_t1:.0f}%  T2 +{_t2:.0f}%  Trail {_trail:.0f}%",
-                f"  Capital    : ₹{_cap:,.0f}  │  Entry from {_entry_s}  │  Cutoff 13:30",
+                f"  Capital    : ₹{_cap:,.0f}  │  Entry from {_entry_s}  │  Cutoff 14:30",
             ], level="info")
             self.log_activity(f"🤖 AI SETUP COMPLETE: Recommended Strategy is {self.active_strategy_name}")
             self.log_activity(f"Sentiment: {self.day_sentiment} | Regime: {', '.join(todays_conditions)}")
@@ -2066,7 +2066,7 @@ class TradingBotOrchestrator:
         hist = await asyncio.to_thread(
             self.kite.historical_data,
             signal_token,
-            datetime.datetime.now() - datetime.timedelta(days=1),
+            datetime.datetime.now() - datetime.timedelta(days=5),
             datetime.datetime.now(),
             timeframe,
         )
@@ -2414,10 +2414,10 @@ class TradingBotOrchestrator:
                         if not await self.setup():
                             self.bot_state = "STOPPED"; continue
 
-                    # Time-of-day hard cutoff (13:30) — earlier than entry_cutoff_time
+                    # Time-of-day hard cutoff (14:30) — earlier than entry_cutoff_time
                     # for new entries; protects against theta eating afternoon gains.
                     if self._time_of_day_size_factor() == 0.0:
-                        logging.debug("Past 13:30 — no new entries allowed.")
+                        logging.debug("Past 14:30 — no new entries allowed.")
                         await asyncio.sleep(30)
                         continue
                     # AGGRESSIVE mode can raise the daily trade cap; expiry day
