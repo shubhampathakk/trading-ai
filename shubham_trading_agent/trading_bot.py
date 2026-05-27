@@ -39,6 +39,8 @@ from indicator_calculator import calculate_all_indicators
 from market_context import MarketConditionIdentifier
 from rag_service import RAGService
 from pcr_feed import PCRFeed
+from gift_nifty_scraper import fetch_gift_nifty_gap
+from coi_tracker import IntradayCOITracker
 from infra import (
     is_nse_holiday,
     load_daily_pnl,
@@ -216,6 +218,7 @@ class TradingBotOrchestrator:
         self._bars_15m_cached_at_bar = None
         # PCR feed — initialised after authentication.
         self.pcr_feed: PCRFeed | None = None
+        self.coi_tracker = None
         # Last PCR result dict (tag, pcr, put_oi, call_oi …). Default to empty so
         # gate is bypassed until the first successful fetch.
         self._pcr_data: dict = {}
@@ -1176,15 +1179,23 @@ class TradingBotOrchestrator:
                         prev = df[df['date'] < today].tail(1)
                         if not prev.empty:
                             prev_close = float(prev.iloc[0]['close'])
-                            ltp = await self._get_live_ltp(token)
-                            signed_gap_pct = (ltp - prev_close) / prev_close * 100.0
+                            now_time = datetime.datetime.now().time()
+                            if now_time < datetime.time(9, 15):
+                                # Pre-market warm-up: Scrape Gift Nifty predicted gap
+                                signed_gap_pct = await asyncio.to_thread(fetch_gift_nifty_gap, prev_close)
+                                logging.info(f"[Pre-Market] Predicted Nifty Gap from Gift Nifty futures: {signed_gap_pct:+.2f}%")
+                            else:
+                                # Live market: Use actual Nifty 50 spot LTP
+                                ltp = await self._get_live_ltp(token)
+                                signed_gap_pct = ((ltp - prev_close) / prev_close) * 100.0
+
                             # Stash signed gap for the strategy selector (Layer 2).
                             self.open_gap_pct = signed_gap_pct
                             gap_pct = abs(signed_gap_pct)
                             if gap_pct >= threshold:
                                 chosen = early_start
                                 reason = (f"open-gap {signed_gap_pct:+.2f}% >= threshold {threshold}% "
-                                          f"(prev_close={prev_close:.2f}, ltp={ltp:.2f})")
+                                          f"(prev_close={prev_close:.2f})")
                 except Exception as e:
                     logging.debug(f"Open-gap check failed (using default start): {e}")
 
@@ -1282,6 +1293,8 @@ class TradingBotOrchestrator:
         """
         self.bot_state = "SETUP"
         logging.debug("--- Running Bot Setup & Strategy Assessment ---")
+        if self.coi_tracker is None:
+            self.coi_tracker = IntradayCOITracker(self, strikes_each_side=3)
 
         # On reassessment runs (when a starting baseline already exists), refresh
         # capital so the strategy decision and any downstream gates work off
@@ -2444,6 +2457,16 @@ class TradingBotOrchestrator:
                         await self._aligned_sleep()
                         continue
 
+                    # Evaluate Change in Open Interest (COI) velocity dynamically
+                    coi_report = {"coi_bias": "NEUTRAL"}
+                    if self.coi_tracker is not None:
+                        try:
+                            spot_price = float(day_df_for_signal["close"].iloc[-1])
+                            current_bar_time = day_df_for_signal.index[-1]
+                            coi_report = await self.coi_tracker.evaluate_coi_velocity(spot_price, current_bar_time)
+                        except Exception as _coi_exc:
+                            logging.debug(f"COI evaluation failed (non-fatal): {_coi_exc}")
+
                     # Refresh PCR (cached for one bar; non-fatal on failure).
                     if self.pcr_feed is not None:
                         try:
@@ -2457,6 +2480,19 @@ class TradingBotOrchestrator:
                         cpr_pivots=self.position_agent.cpr_pivots,
                         vix_conditions=self.todays_conditions,
                     )
+
+                    # GATING INJECTOR: Protect option entries from institutional counter-writing walls
+                    if signal == "BUY" and coi_report.get("coi_bias") == "INSTITUTIONAL_BEARISH_RESISTANCE_LOADING":
+                        logging.warning("[COI Gate] Strategy issued BUY, but institutional desks are loading Call contracts aggressively overhead. Blocking entry!")
+                        self.log_activity("🛒 Entry signal 'BUY' BLOCKED by Institutional Call Writing Wall.")
+                        await self._aligned_sleep()
+                        continue
+
+                    if signal == "SELL" and coi_report.get("coi_bias") == "INSTITUTIONAL_BULLISH_SUPPORT_BUILDUP":
+                        logging.warning("[COI Gate] Strategy issued SELL, but institutional desks are packing Put contracts directly underneath. Blocking entry!")
+                        self.log_activity("🛒 Entry signal 'SELL' BLOCKED by Institutional Put Buildup Support.")
+                        await self._aligned_sleep()
+                        continue
 
                     # Day quality filter.
                     #   TRENDING → normal flow, clear any leftover scalp flags.

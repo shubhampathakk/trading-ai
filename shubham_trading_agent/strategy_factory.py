@@ -436,7 +436,11 @@ class Opening_Range_Breakout_Strategy(BaseStrategy):
         orb_end_time = (datetime.datetime.combine(datetime.date.today(), market_open_time) + datetime.timedelta(minutes=orb_minutes)).time()
         
         if not self.orb_period_set and current_time >= orb_end_time:
-            orb_df = day_df.between_time(market_open_time.strftime("%H:%M"), orb_end_time.strftime("%H:%M"))
+            # FIX: Filter to today's date ONLY, then get the time window
+            today_date = day_df.index[-1].date()
+            today_df = day_df[day_df.index.date == today_date]
+            
+            orb_df = today_df.between_time(market_open_time.strftime("%H:%M"), orb_end_time.strftime("%H:%M"))
             if not orb_df.empty:
                 self.orb_high, self.orb_low = orb_df['high'].max(), orb_df['low'].min()
                 self.orb_period_set = True

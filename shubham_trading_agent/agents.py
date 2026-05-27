@@ -2178,7 +2178,7 @@ class PositionManagementAgent:
             "TradeType": trade["type"],
             "EntryPrice": trade["entry_price"],
             "ExitPrice": exit_price,
-            "Quantity": trade["quantity"],
+            "Quantity": trade.get("_pe_original_qty", trade["quantity"]),
             "ProfitLoss": pnl,
             "Status": "CLOSED",
             "Strategy": trade.get("Strategy", "N/A"),

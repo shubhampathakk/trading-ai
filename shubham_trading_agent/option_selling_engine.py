@@ -164,24 +164,44 @@ class OptionSellingEngine:
         try:
             expiry = self._get_nearest_expiry()
             
-            # Snap Spot
-            spot_data = await asyncio.to_thread(self.kite.ltp, "NSE:NIFTY 50")
-            spot = float((spot_data or {}).get("NSE:NIFTY 50", {}).get("last_price", 0))
+            # Fetch underlying dynamically based on config
+            underlying_name = self.flags.get("underlying_instrument", "NIFTY 50")
+            spot_data = await asyncio.to_thread(self.kite.ltp, f"NSE:{underlying_name}")
+            spot = float((spot_data or {}).get(f"NSE:{underlying_name}", {}).get("last_price", 0))
             if spot <= 0:
                 logging.error("[OptionSelling] Spot LTP unavailable.")
                 return
 
-            atm_strike = round(spot / 50.0) * 50
-            step = 50.0
-
+            # Fetch dynamic step size (50 for Nifty, 100 for BankNifty)
+            step = float(self.orchestrator.order_agent._strike_step())
+            atm_strike = round(spot / step) * step
             dte = (expiry - datetime.date.today()).days
+
+            # Fetch India VIX dynamically to calculate standard-deviation expected move
+            vix_data = await asyncio.to_thread(self.kite.ltp, "NSE:INDIA VIX")
+            vix = float((vix_data or {}).get("NSE:INDIA VIX", {}).get("last_price", 15.0))
+
+            # Calculate 1-day expected move using 252 trading days (safer quant buffer)
+            import math
+            expected_move = spot * (vix / 100.0) * math.sqrt(1.0 / 252.0)
+            dynamic_offset_steps = max(2, math.ceil(expected_move / step))
+
+            current_offset = dynamic_offset_steps
+            current_sl_multiplier = self.sl_multiplier
+            
+            # Dynamic adjustment under rapid volatility expansion (VIX_SPIKE_VELOCITY +1 step!)
+            if 'VIX_SPIKE_VELOCITY' in self.orchestrator.todays_conditions:
+                current_offset += 1
+                logging.info(f"[OptionSelling] VIX_SPIKE_VELOCITY detected! Expanding offset steps to {current_offset} | SL remains at {current_sl_multiplier}")
+            else:
+                logging.info(f"[OptionSelling] Dynamic VIX Expected Move: {expected_move:.2f} pts | Starting Offset steps: {current_offset}")
 
             # Widen the stop loss on 0-DTE to account for violent Gamma swings
             if dte == 0:
-                base_sl_mult = self.sl_multiplier * 1.5 
+                base_sl_mult = current_sl_multiplier * 1.5 
                 logging.info(f"[OptionSelling] 0-DTE Expiry Day detected. Widening base SL multiplier to {base_sl_mult}")
             else:
-                base_sl_mult = self.sl_multiplier
+                base_sl_mult = current_sl_multiplier
 
             sl_mult = base_sl_mult if phase == "single" else (base_sl_mult * 1.20)
 
@@ -190,7 +210,7 @@ class OptionSellingEngine:
 
             # Strike construction mapping
             if mode == "strangle":
-                offset = self.strike_offset_steps if phase == "single" else 2
+                offset = current_offset if phase == "single" else 2
                 call_strike = atm_strike + (offset * step)
                 put_strike = atm_strike - (offset * step)
                 call_hedge_strike = atm_strike + (self.hedge_offset_steps * step)
@@ -207,18 +227,18 @@ class OptionSellingEngine:
                 call_strike = atm_strike
                 put_strike = atm_strike
                 # Long OTM wings (wing width config, e.g. 200 or 500 points)
-                call_hedge_strike = atm_strike + (self.strike_offset_steps * step) # wing CE
-                put_hedge_strike = atm_strike - (self.strike_offset_steps * step)  # wing PE
+                call_hedge_strike = atm_strike + (current_offset * step) # wing CE
+                put_hedge_strike = atm_strike - (current_offset * step)  # wing PE
 
             elif mode == "bull_put_spread":
                 # Sell Put close OTM near support, Buy lower OTM Put
-                put_strike = atm_strike - (self.strike_offset_steps * step)
-                put_hedge_strike = atm_strike - ((self.strike_offset_steps + 2) * step)
+                put_strike = atm_strike - (current_offset * step)
+                put_hedge_strike = atm_strike - ((current_offset + 2) * step)
                 
             elif mode == "bear_call_spread":
                 # Sell Call close OTM near resistance, Buy higher OTM Call
-                call_strike = atm_strike + (self.strike_offset_steps * step)
-                call_hedge_strike = atm_strike + ((self.strike_offset_steps + 2) * step)
+                call_strike = atm_strike + (current_offset * step)
+                call_hedge_strike = atm_strike + ((current_offset + 2) * step)
 
             # Resolve active contracts symbols
             if call_strike: ce_symbol = self._resolve_symbol(call_strike, "CE", expiry)
@@ -226,9 +246,13 @@ class OptionSellingEngine:
             if call_hedge_strike: ce_hedge_symbol = self._resolve_symbol(call_hedge_strike, "CE", expiry)
             if put_hedge_strike:  pe_hedge_symbol = self._resolve_symbol(put_hedge_strike, "PE", expiry)
 
-            # Sizing
+            # Sizing FIX: Respect the risk_per_trade_percent from config
             cap = self.orchestrator.starting_capital or 100000.0
-            lots = max(1, int(cap // 50000))
+            risk_pct = float(self.flags.get("_effective_risk_pct") or self.flags.get("risk_per_trade_percent", 25.0))
+            allocated_capital = cap * (risk_pct / 100.0)
+            
+            # Approximate margin requirement per hedged lot is ~50k
+            lots = max(1, int(allocated_capital // 50000))
             ref_sym = ce_symbol or pe_symbol
             lot_size = self._get_lot_size(ref_sym)
             qty = lots * lot_size
@@ -400,42 +424,68 @@ class OptionSellingEngine:
         return await asyncio.to_thread(_execute_order_sync, api_key, access_tok, params)
 
     async def _monitor_spread_premium(self, now, exit_time, is_paper: bool):
-        """Monitors combined premium values of multi-leg credit spreads dynamically."""
+        """Monitors combined liquidation premium values using real-time market depth."""
         mode = self.state["mode"]
         qty = self.state["quantity"]
         net_credit = self.state["net_credit_received"]
 
-        # Fetch live LTPs using a single batched API call to prevent desync and rate limits
-        ce_ltp = pe_ltp = ce_hedge_ltp = pe_hedge_ltp = 0.0
         symbols_to_fetch = []
+        ce_sym = pe_sym = ce_hedge_sym = pe_hedge_sym = None
 
         if self.state.get("call_leg") and self.state["call_leg"]["status"] == "OPEN":
-            symbols_to_fetch.append(f"NFO:{self.state['call_leg']['symbol']}")
+            ce_sym = self.state['call_leg']['symbol']
+            symbols_to_fetch.append(f"NFO:{ce_sym}")
         if self.state.get("put_leg") and self.state["put_leg"]["status"] == "OPEN":
-            symbols_to_fetch.append(f"NFO:{self.state['put_leg']['symbol']}")
+            pe_sym = self.state['put_leg']['symbol']
+            symbols_to_fetch.append(f"NFO:{pe_sym}")
         if self.state.get("call_hedge") and self.state["call_hedge"]["status"] == "OPEN":
-            symbols_to_fetch.append(f"NFO:{self.state['call_hedge']['symbol']}")
+            ce_hedge_sym = self.state['call_hedge']['symbol']
+            symbols_to_fetch.append(f"NFO:{ce_hedge_sym}")
         if self.state.get("put_hedge") and self.state["put_hedge"]["status"] == "OPEN":
-            symbols_to_fetch.append(f"NFO:{self.state['put_hedge']['symbol']}")
+            pe_hedge_sym = self.state['put_hedge']['symbol']
+            symbols_to_fetch.append(f"NFO:{pe_hedge_sym}")
+
+        current_value = 0.0
 
         if symbols_to_fetch:
             try:
-                ltp_dict = await asyncio.to_thread(self.kite.ltp, symbols_to_fetch)
+                # Use quote to extract full market depth instead of static last traded prices
+                quote_dict = await asyncio.to_thread(self.kite.quote, symbols_to_fetch)
                 
-                if self.state.get("call_leg") and self.state["call_leg"]["status"] == "OPEN":
-                    ce_ltp = float(ltp_dict.get(f"NFO:{self.state['call_leg']['symbol']}", {}).get("last_price", 0.0))
-                if self.state.get("put_leg") and self.state["put_leg"]["status"] == "OPEN":
-                    pe_ltp = float(ltp_dict.get(f"NFO:{self.state['put_leg']['symbol']}", {}).get("last_price", 0.0))
-                if self.state.get("call_hedge") and self.state["call_hedge"]["status"] == "OPEN":
-                    ce_hedge_ltp = float(ltp_dict.get(f"NFO:{self.state['call_hedge']['symbol']}", {}).get("last_price", 0.0))
-                if self.state.get("put_hedge") and self.state["put_hedge"]["status"] == "OPEN":
-                    pe_hedge_ltp = float(ltp_dict.get(f"NFO:{self.state['put_hedge']['symbol']}", {}).get("last_price", 0.0))
-            except Exception as e:
-                logging.warning(f"[OptionSelling] Batched LTP fetch failed: {e}")
+                # To exit a Short option contract, you must buy it back at the prevailing ASK price
+                if ce_sym and f"NFO:{ce_sym}" in quote_dict:
+                    ce_quote = quote_dict[f"NFO:{ce_sym}"]
+                    sell_depth = ce_quote.get("depth", {}).get("sell") or [{}]
+                    ce_ask = float(sell_depth[0].get("price", 0.0))
+                    # Fallback to LTP if orderbook is completely empty at this millisecond
+                    if ce_ask <= 0.0: ce_ask = float(ce_quote.get("last_price", 0.0))
+                    current_value += ce_ask
+                    
+                if pe_sym and f"NFO:{pe_sym}" in quote_dict:
+                    pe_quote = quote_dict[f"NFO:{pe_sym}"]
+                    sell_depth = pe_quote.get("depth", {}).get("sell") or [{}]
+                    pe_ask = float(sell_depth[0].get("price", 0.0))
+                    if pe_ask <= 0.0: pe_ask = float(pe_quote.get("last_price", 0.0))
+                    current_value += pe_ask
+                    
+                # To exit a Long option contract, you must sell it back at the prevailing BID price
+                if ce_hedge_sym and f"NFO:{ce_hedge_sym}" in quote_dict:
+                    ce_h_quote = quote_dict[f"NFO:{ce_hedge_sym}"]
+                    buy_depth = ce_h_quote.get("depth", {}).get("buy") or [{}]
+                    ce_h_bid = float(buy_depth[0].get("price", 0.0))
+                    if ce_h_bid <= 0.0: ce_h_bid = float(ce_h_quote.get("last_price", 0.0))
+                    current_value -= ce_h_bid
+                    
+                if pe_hedge_sym and f"NFO:{pe_hedge_sym}" in quote_dict:
+                    pe_h_quote = quote_dict[f"NFO:{pe_hedge_sym}"]
+                    buy_depth = pe_h_quote.get("depth", {}).get("buy") or [{}]
+                    pe_h_bid = float(buy_depth[0].get("price", 0.0))
+                    if pe_h_bid <= 0.0: pe_h_bid = float(pe_h_quote.get("last_price", 0.0))
+                    current_value -= pe_h_bid
 
-        # Combined Current Value calculation
-        # Spread Net Value = (Short Call LTP + Short Put LTP) - (Long Call LTP + Long Put LTP)
-        current_value = (ce_ltp + pe_ltp) - (ce_hedge_ltp + pe_hedge_ltp)
+            except Exception as e:
+                logging.warning(f"[OptionSelling] Batched market depth quote fetch failed: {e}")
+                return # Skip this iteration to prevent garbage collections from triggering stops
 
         # 1. Target Profit booking (50% premium drop target)
         # If entry premium was ₹100 and now is at or below ₹50, we book ₹50 profit!

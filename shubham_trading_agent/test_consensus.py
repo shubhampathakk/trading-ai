@@ -114,8 +114,7 @@ async def test_consensus_agent():
         ssl_ctx = ssl._create_unverified_context()
         conn = aiohttp.TCPConnector(ssl=ssl_ctx)
         
-        # api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={gemini_key}" # Old model setting
-        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key={gemini_key}" # Reverted to Pro model
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={gemini_key}"
         payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
 
         print("Connecting to Google AI Studio and sending debate prompt...", flush=True)

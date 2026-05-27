@@ -115,16 +115,50 @@ class MarketConditionIdentifier:
         conditions = set()
 
         try:
-            # 1. Get VIX condition
+            # 1. Get VIX condition using Volatility Percent Bandwidth (%B) over a 20-day window
             vix_hist = pd.DataFrame(self.kite.historical_data(self.vix_token, from_date, to_date, "day"))
             vix_hist['date'] = pd.to_datetime(vix_hist['date']).dt.date
             today_vix_data = vix_hist[vix_hist['date'] == target_date]
 
             if not today_vix_data.empty:
                 vix_value = today_vix_data.iloc[0]['close']
-                if vix_value < 17: conditions.add('VIX_LOW')
-                elif 17 <= vix_value < 25: conditions.add('VIX_MEDIUM')
-                else: conditions.add('VIX_HIGH')
+                
+                # Calculate rolling mean and std of VIX over 20 trading days
+                vix_series = vix_hist['close']
+                vix_mean = vix_series.rolling(window=20).mean().iloc[-1]
+                vix_std = vix_series.rolling(window=20).std().iloc[-1]
+                
+                if pd.notna(vix_mean) and pd.notna(vix_std) and vix_std > 0:
+                    pct_b = (vix_value - (vix_mean - 2.0 * vix_std)) / (4.0 * vix_std)
+                    
+                    # Determine Velocity Tags (Great for the Gemini Boardroom prompt)
+                    if pct_b > 1.0:
+                        conditions.add('VIX_SPIKE_VELOCITY')
+                    elif pct_b < 0.0:
+                        conditions.add('VIX_CRUSH_VELOCITY')
+
+                    # Determine Regime Tags WITH Absolute Guardrails
+                    if pct_b >= 0.7:
+                        # Prevent a micro-spike in a dead market from triggering VIX_HIGH
+                        if vix_value < 14.0:
+                            conditions.add('VIX_MEDIUM')
+                        else:
+                            conditions.add('VIX_HIGH')
+                            
+                    elif pct_b <= 0.3:
+                        # Prevent a micro-drop in a panic market from triggering VIX_LOW
+                        if vix_value > 20.0:
+                            conditions.add('VIX_MEDIUM')
+                        else:
+                            conditions.add('VIX_LOW')
+                            
+                    else:
+                        conditions.add('VIX_MEDIUM')
+                else:
+                    # Fallback to classic threshold if history is insufficient
+                    if vix_value < 17: conditions.add('VIX_LOW')
+                    elif 17 <= vix_value < 25: conditions.add('VIX_MEDIUM')
+                    else: conditions.add('VIX_HIGH')
             
             # 2. Get Event condition
             if event := self.calendar.get_event_for_date(target_date):
