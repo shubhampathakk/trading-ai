@@ -1339,9 +1339,12 @@ class PositionManagementAgent:
         except Exception:
             self.active_trade.setdefault('_entry_spot', 0)
 
+        risk_per_share = float(self.active_trade['entry_price']) - sl_price
+        target_price = self._calculate_target_price(risk_per_share)
         logging.info(
             f"Managing {self.active_trade['symbol']} entry={self.active_trade['entry_price']:.2f} "
-            f"hard_SL={sl_price:.2f} partial_exits={'ON' if pe_eligible else 'OFF'} "
+            f"target={target_price:.2f} hard_SL={sl_price:.2f} "
+            f"partial_exits={'ON' if pe_eligible else 'OFF'} "
             f"entry_spot={self.active_trade.get('_entry_spot', 0):.2f}"
         )
         self._save_state()
@@ -1630,6 +1633,19 @@ class PositionManagementAgent:
         new_trail = self._update_premium_trailing_stop(current_price)
         if not is_paper_trade and self.active_trade.get("sl_order_id") and new_trail:
             await self._maybe_modify_broker_sl(new_trail)
+
+        # 7.5 Ultimate Profit Target Check (automatic fixed profit exit)
+        risk_per_share = float(self.active_trade['entry_price']) - float(self.active_trade['initial_stop_loss'])
+        target_price = self._calculate_target_price(risk_per_share)
+        if current_price >= target_price:
+            logging.info(
+                f"🏆 Ultimate Profit Target reached for {symbol} @ {current_price:.2f} "
+                f"(Target={target_price:.2f}). Triggering automatic exit!"
+            )
+            return await self.exit_trade(
+                is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key,
+                exit_reason="Profit Target Hit"
+            )
 
         # 8. Software backstop: if no broker SL or it's stale, enforce in code.
         trail = self.active_trade.get("trailing_stop_loss")

@@ -131,7 +131,8 @@ trading_flags:
   paper_trading: false
   product_type: MIS
   rag_min_trading_days: 1
-  risk_per_trade_percent: 20.0
+  #Change risk_per_trade_percent to 20 if you want you to use 80% of your funds to trade.
+  risk_per_trade_percent: 25.0
   run_startup_backtest: false
   # Alignment note: backtest_years drives the date range only when
   # run_startup_backtest is true. The bot will auto-align the window to
@@ -164,7 +165,7 @@ trading_flags:
   use_rag: true
   win_rate_threshold: 55.0
   min_stop_loss_points: 7.0
-  risk_reward_ratio: 2.0
+  risk_reward_ratio: 0.32
   min_days_to_expiry: 2
   limit_order_slippage_percent: 0.5
   operator_input_timeout_seconds: 20
@@ -198,8 +199,8 @@ trading_flags:
 # Partial exits are SKIPPED if fewer than 2 lots are held (can't split).
 partial_exits:
   enable: true
-  t1_gain_pct: 30          # +30% on entry premium → T1 exit
-  t2_gain_pct: 60          # +60% on entry premium → T2 exit
+  t1_gain_pct: 8.0          # +8% on entry premium → T1 exit
+  t2_gain_pct: 12.0          # +12% on entry premium → T2 exit
   t1_exit_pct: 40          # sell 40% of original position at T1
   t2_exit_pct: 40          # sell 40% of original position at T2
   # Runner (remaining 20%) trail: tightened automatically by _dynamic_trail_pct
@@ -213,8 +214,8 @@ range_scalp:
   enable: true
   size_factor: 1.0        # position size as a fraction of normal
   trail_pct: 10.0         # trailing stop % (vs 15% on trending days)
-  t1_gain_pct: 15.0       # T1 profit target: +15% on entry premium
-  t2_gain_pct: 25.0       # T2 profit target: +25% on entry premium
+  t1_gain_pct: 8.0       # T1 profit target: +8% on entry premium
+  t2_gain_pct: 12.0       # T2 profit target: +12% on entry premium
 trailing_stop_loss:
   indicator_exit_type: PSAR
   ma_period: 9
@@ -236,8 +237,8 @@ mode_switching:
   aggressive_risk_percent: 2.0   # risk_per_trade_percent when AGGRESSIVE (vs 1.0 default)
   aggressive_max_trades: 5       # max trades/day in AGGRESSIVE mode (vs 3 in MODERATE)
   aggressive_trail_pct: 20.0     # base trailing-stop % in AGGRESSIVE (vs 15%)
-  aggressive_t1_gain_pct: 40.0   # T1 profit target in AGGRESSIVE (vs 30%)
-  aggressive_t2_gain_pct: 80.0   # T2 profit target in AGGRESSIVE (vs 60%)
+  aggressive_t1_gain_pct: 12.0   # T1 profit target in AGGRESSIVE (vs 8%)
+  aggressive_t2_gain_pct: 18.0   # T2 profit target in AGGRESSIVE (vs 12%)
   # --- MODERATE thresholds ---
   moderate_trigger_losses: 2     # consecutive losses to force MODERATE
   moderate_drawdown: 0.08        # equity drawdown threshold to force MODERATE (8%)

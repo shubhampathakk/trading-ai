@@ -146,7 +146,7 @@ When registering your application in the **[Zerodha Developer Console](https://d
 * **API Type**: Connect (Kite Connect API)
 * **Redirect URL**: `http://127.0.0.1:8080/callback`
 * **Postback URL**: *(Leave blank)*
-* **IP Whitelist**: *(Leave blank)*
+* **IP Whitelist**: *(Leave blank - highly recommended to disable checks)*
 
 ---
 
@@ -175,3 +175,54 @@ cd shubham_trading_agent
 source trade_bot/bin/activate
 python3 test_consensus.py
 ```
+
+---
+
+## 🛠️ Daily Operations & Runtime Troubleshooting
+
+Follow these daily procedures and troubleshooting walk-throughs to ensure flawless operations every session:
+
+### 🌅 1. The Morning Login & Session Boot Flow (09:00 AM Startup)
+Zerodha Kite API tokens expire daily at **06:00 AM**. To run a flawless pre-market warmup session, launch the bot at **09:00 AM IST**:
+
+1. **Launch Browser Cockpit**: In your first terminal window, run `./start_terminal.sh` to launch the REST Proxy Bridge on port `5001` and load your glassmorphic browser cockpit.
+2. **Launch the Bot (Virtual Env)**: In a second terminal window, navigate to `shubham_trading_agent`, activate the environment, and boot the agent:
+   ```bash
+   cd shubham_trading_agent
+   source trade_bot/bin/activate
+   python3 trading_bot.py
+   ```
+3. **Retrieve Request Token**:
+   * The terminal will print a secure Zerodha login link. Copy it, open it in your browser, log in, and enter your TOTP/2FA.
+   * Your browser will redirect to a callback URL containing the token: `http://127.0.0.1:8080/callback?request_token=XXXXXX`
+4. **Authorize**: Copy the `XXXXXX` request token string from the address bar, paste it back into the terminal, and hit Enter.
+5. **Cache Active**: The bot generates your daily `access_token`, caches it dynamically inside `.env`, and connects. If you restart the bot mid-day, it boots instantly in **under 2 seconds** without prompting you for login again!
+6. **Pre-Market Countdown (09:00 - 09:15 AM)**: The bot loads morning institutional Crore flows (FII/DII) and runs the Google Gemini boardroom strategy debate. It will enter a silent sleep countdown until the market opens.
+7. **Morning Volatility Lockout (09:15 - 09:30 AM)**: The bot wakes up at 09:15:30 AM spot open, but locks new entries during the opening 15 minutes to let morning IV spikes and whipsaws cool down. Live scans and entries begin at **09:30 AM**.
+
+### 🌐 2. Handling the Zerodha IP Whitelist Block
+If you see the error `PermissionException: IP (XXXX) is not allowed to place orders for this app` in your logs:
+* **The Cause**: Your internet provider dynamically rotates your public IP (especially on dynamic IPv6 connections), which contradicts the rigid IP Whitelist in the Zerodha developer settings.
+* **The Direct Solution**:
+  1. Log in to the **[Zerodha Developer Console](https://developers.kite.trade/apps)**.
+  2. Select your active Kite Connect app.
+  3. Find the **IP Whitelist** configuration box.
+  4. **Enter your current public IPv4 and IPv6 addresses (comma-separated).**
+     * *Copy and paste this exact line into the IP Whitelist box:*
+       ```text
+       2a00:79e0:2432:a:c548:34b0:c65f:c845, 104.135.188.69
+       ```
+     * *Since ISPs rotate your public IP dynamically, if you reconnect your router or get a connection timeout error, simply re-run `curl -s ifconfig.me` in your terminal to get your new IP and update this field.*
+  5. **Save**: Scroll to the bottom of the page and click **Save/Update** to register the changes!
+
+### ⏱️ 3. Bypassing Afternoon Cutoff Limits (For Late Runs & Testing)
+By default, the bot enforces strict safeguards to protect options buyers from afternoon theta decay, blocking all new entries after **1:30 PM**.
+If you want to run or test the bot in the afternoon:
+1. **Bypass the Entry Cutoff**:
+   * Open `config.yaml` and find `entry_cutoff_time` (line 176).
+   * Change `entry_cutoff_time: "13:30"` to your target afternoon time (e.g., `entry_cutoff_time: "14:30"` or `entry_cutoff_time: "15:15"`).
+2. **Disable Time-of-Day Sizing Lockout**:
+   * Open `config.yaml` and locate `enable_time_of_day_sizing` (line 192).
+   * Change `enable_time_of_day_sizing: true` to `enable_time_of_day_sizing: false` to prevent the bot from scaling afternoon order sizes to zero in its Position Sizing Engine.
+3. **Restart**: Launch the bot again with `python3 trading_bot.py`, and it will cleanly scan and trigger afternoon trades!
+
