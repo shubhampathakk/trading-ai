@@ -1603,7 +1603,15 @@ class TradingBotOrchestrator:
     def _write_dashboard_status(self):
         """Atomically writes the active AI Agent status & debate logs to the dashboard folder."""
         try:
-            # Retrieve active position details and calculate live P&L
+            # 1. Fetch live Macro Context for the Radar
+            spot_val = 0.0
+            vix_val = 0.0
+            try:
+                spot_val = safe_ltp(self.kite, f"NSE:{self.order_agent.underlying_instrument}") or 0.0
+                vix_val = safe_ltp(self.kite, "NSE:INDIA VIX") or 0.0
+            except Exception: pass
+
+            # 2. Enrich the Active Position with Target Prices
             active_pos = None
             if self.position_agent and self.position_agent.active_trade:
                 active_pos = dict(self.position_agent.active_trade)
@@ -1612,16 +1620,27 @@ class TradingBotOrchestrator:
                     ltp_val = safe_ltp(self.kite, f"NFO:{sym}")
                     if ltp_val:
                         active_pos["current_price"] = ltp_val
-                        # If spread, subtract short premium
                         if active_pos.get("is_spread"):
                             short_sym = active_pos.get("spread_short_symbol")
                             s_ltp = safe_ltp(self.kite, f"NFO:{short_sym}") if short_sym else None
-                            if s_ltp:
-                                ltp_val = max(0.0, ltp_val - float(s_ltp))
+                            if s_ltp: ltp_val = max(0.0, ltp_val - float(s_ltp))
+                        
                         pnl = (ltp_val - active_pos["entry_price"]) * active_pos["quantity"]
-                        # Add any already banked partial exits realized P&L
                         pnl += float(active_pos.get("_pe_realized_pnl", 0.0))
                         active_pos["live_pnl"] = pnl
+                        
+                        # --- NEW: Calculate Exact Targets for the Dashboard ---
+                        flags = self.config.get('trading_flags', {})
+                        pe_cfg = self.config.get('partial_exits', {})
+                        
+                        # Use Scalp/Aggressive/Normal targets based on current mode
+                        if flags.get('_scalp_mode'):
+                            t1_pct = float(flags.get('_scalp_t1_gain_pct', 15.0))
+                        else:
+                            t1_pct = float(flags.get('_agg_t1_gain_pct', pe_cfg.get('t1_gain_pct', 30.0)))
+                            
+                        # Pass target prices to the UI
+                        active_pos["t1_target_price"] = active_pos["entry_price"] * (1 + (t1_pct / 100.0))
                 except Exception:
                     active_pos["current_price"] = active_pos["entry_price"]
                     active_pos["live_pnl"] = 0.0
@@ -1635,6 +1654,8 @@ class TradingBotOrchestrator:
                 "realized_pnl_today": self.realized_pnl_today,
                 "consecutive_losses": self.consecutive_losses,
                 "starting_capital": self.starting_capital,
+                "live_spot": spot_val,
+                "live_vix": vix_val,
                 "debate_log": getattr(self.langgraph_agent, "last_debate_text", ""),
                 "active_position": active_pos,
                 "latest_logs": getattr(self, "latest_logs", [])

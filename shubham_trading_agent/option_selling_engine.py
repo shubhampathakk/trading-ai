@@ -310,8 +310,8 @@ class OptionSellingEngine:
             # Place broker SL orders (only for Strangles / Straddles which check individual legs)
             ce_sl_order_id = pe_sl_order_id = None
             if not is_paper and mode in ("strangle", "straddle"):
-                if ce_symbol: ce_sl_order_id = await self._place_broker_buy_slm(ce_symbol, qty, ce_sl_trigger)
-                if pe_symbol: pe_sl_order_id = await self._place_broker_buy_slm(pe_symbol, qty, pe_sl_trigger)
+                if ce_symbol: ce_sl_order_id = await self._place_broker_buy_sl(ce_symbol, qty, ce_sl_trigger)
+                if pe_symbol: pe_sl_order_id = await self._place_broker_buy_sl(pe_symbol, qty, pe_sl_trigger)
 
             self.state = {
                 "mode": mode,
@@ -407,7 +407,9 @@ class OptionSellingEngine:
 
         return 0.0
 
-    async def _place_broker_buy_slm(self, symbol: str, qty: int, trigger_price: float) -> str:
+    async def _place_broker_buy_sl(self, symbol: str, qty: int, trigger_price: float) -> str:
+        # For options SELLING, SL is a BUY order. Limit price must be HIGHER than trigger to execute safely.
+        limit_price = round((trigger_price * 1.05) / 0.05) * 0.05
         params = {
             "variety": self.flags["order_variety"],
             "exchange": self.kite.EXCHANGE_NFO,
@@ -415,9 +417,9 @@ class OptionSellingEngine:
             "transaction_type": self.kite.TRANSACTION_TYPE_BUY,
             "quantity": qty,
             "product": self.flags["product_type"],
-            "order_type": self.kite.ORDER_TYPE_SLM,
+            "order_type": self.kite.ORDER_TYPE_SL,
             "trigger_price": trigger_price,
-            "market_protection": self.os_config.get("market_protection", -1)
+            "price": limit_price,
         }
         api_key = self.config["zerodha"]["api_key"]
         access_tok = self.config["zerodha"]["access_token"]

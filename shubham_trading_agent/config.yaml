@@ -65,7 +65,7 @@ risk_management:
   enable_volatility_adjustment: true
   high_vix_risk_reduction_factor: 0.5
   high_vix_threshold: 22.0
-  max_daily_loss_percent: 2.5
+  max_daily_loss_percent: 12.0
   # Consecutive-loss circuit breaker: halt the session after N losing trades
   # in a row without a winning trade in between. A winning trade resets the
   # streak to 0. The breaker is session-scoped (resets on bot restart).
@@ -190,7 +190,7 @@ trading_flags:
   enable_trap_detection: true
   # Time-of-day position sizing: prime entry windows (09:30-10:15, 11:30-12:30)
   # get full size; lunch drift (12:30-13:30) gets 50%; after 13:30 = blocked.
-  enable_time_of_day_sizing: true
+  enable_time_of_day_sizing: false
 # Tiered partial profit booking (professional 40/40/20 framework).
 # T1: book t1_exit_pct% of original position when premium gains t1_gain_pct%;
 #     simultaneously slides SL to breakeven.

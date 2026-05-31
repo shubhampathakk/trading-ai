@@ -205,6 +205,7 @@ async def _place_entry_with_retry(
     base_slip_pct: float = 0.005,
     slip_multiplier: float = 2.0,
     timeout_per_attempt: int = 15,
+    market_protection: float = -1,
 ) -> tuple:
     """
     Places a LIMIT BUY entry with automatic price-widening on non-fill:
@@ -297,6 +298,7 @@ async def _place_entry_with_retry(
         mkt_params = dict(base_params)
         mkt_params.pop("price", None)
         mkt_params["order_type"] = "MARKET"
+        mkt_params["market_protection"] = market_protection
         mkt_id = await asyncio.to_thread(
             _execute_order_sync, api_key, access_token, mkt_params
         )
@@ -650,6 +652,7 @@ class OrderExecutionAgent:
             base_slip_pct=base_slip,
             slip_multiplier=slip_mult,
             timeout_per_attempt=per_attempt,
+            market_protection=self.config.get("trading_flags", {}).get("market_protection", -1),
         )
         if long_status != "COMPLETE" or long_fill <= 0:
             logging.error(
@@ -761,8 +764,12 @@ class OrderExecutionAgent:
                               tick_size: float = 0.05):
         existing = await self.find_existing_sl_order(symbol)
         if existing:
-            logging.info(f"SL-M already present for {symbol} (order_id={existing}); reusing.")
+            logging.info(f"SL already present for {symbol} (order_id={existing}); reusing.")
             return existing
+
+        rounded_trigger = tick_round(trigger_price, tick_size)
+        # For options BUYING, SL is a SELL order. Limit price must be LOWER than trigger to execute safely.
+        limit_price = tick_round(rounded_trigger * 0.95, tick_size)
 
         sl_params = {
             "variety": self.flags["order_variety"],
@@ -771,11 +778,11 @@ class OrderExecutionAgent:
             "transaction_type": self.kite.TRANSACTION_TYPE_SELL,
             "quantity": qty,
             "product": self.flags["product_type"],
-            "order_type": self.kite.ORDER_TYPE_SLM,
-            "trigger_price": tick_round(trigger_price, tick_size),
-            "market_protection": self.config.get("trading_flags", {}).get("market_protection", -1)
+            "order_type": self.kite.ORDER_TYPE_SL,
+            "trigger_price": rounded_trigger,
+            "price": limit_price,
         }
-        logging.info(f"ASYNC: placing SL-M {sl_params}")
+        logging.info(f"ASYNC: placing SL Limit {sl_params}")
         api_key = self.config["zerodha"]["api_key"]
         access_token = self.config["zerodha"]["access_token"]
         return await asyncio.to_thread(_execute_order_sync, api_key, access_token, sl_params)
@@ -1942,17 +1949,21 @@ class PositionManagementAgent:
         if abs_move < TRAIL_MIN_MOVE_TICKS * tick or rel_move < TRAIL_MIN_MOVE_PERCENT:
             return  # Too small to bother modifying.
 
+        rounded_trigger = tick_round(new_trigger, tick)
+        limit_price = tick_round(rounded_trigger * 0.95, tick)
+
         ok = await asyncio.to_thread(
             _modify_order_sync,
             self.api_key, self.access_token,
             self.flags["order_variety"], order_id,
-            trigger_price=tick_round(new_trigger, tick),
-            order_type=self.kite.ORDER_TYPE_SLM,
+            trigger_price=rounded_trigger,
+            price=limit_price,
+            order_type=self.kite.ORDER_TYPE_SL,
         )
         if ok:
             self.active_trade["sl_trigger_sent"] = new_trigger
             self._save_state()
-            logging.info(f"SL-M trigger trailed up to {new_trigger:.2f}")
+            logging.info(f"SL trigger trailed up to {new_trigger:.2f} (Limit: {limit_price:.2f})")
 
     # ---------- losing-trade post-mortem ----------
 
