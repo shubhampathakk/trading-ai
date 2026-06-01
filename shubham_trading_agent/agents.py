@@ -1335,7 +1335,7 @@ class PositionManagementAgent:
         pe_cfg = self.config.get('partial_exits') or {}
         lot_size = int(self.active_trade.get('lot_size', 1) or 1)
         qty = int(self.active_trade.get('quantity', 0) or 0)
-        pe_eligible = pe_cfg.get('enable', False) and qty >= lot_size * 2
+        pe_eligible = pe_cfg.get('enable', False) and (qty >= lot_size * 2 or pe_cfg.get('t1_exit_pct') == 100)
         self.active_trade['_pe_enabled']       = pe_eligible
         self.active_trade['_pe_original_qty']  = qty
         self.active_trade['_pe_t1_hit']        = False

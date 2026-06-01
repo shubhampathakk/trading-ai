@@ -65,7 +65,7 @@ risk_management:
   enable_volatility_adjustment: true
   high_vix_risk_reduction_factor: 0.5
   high_vix_threshold: 22.0
-  max_daily_loss_percent: 12.0
+  max_daily_loss_percent: 30.0
   max_daily_losses: 2
   # Consecutive-loss circuit breaker: halt the session after N losing trades
   # in a row without a winning trade in between. A winning trade resets the
@@ -175,7 +175,7 @@ trading_flags:
   # Hard new-entry cutoff. Professional rule: no new options entries after 13:30.
   # Theta and bid-ask spreads widen in the last 75 min before close.
   # Hard close of any open position at 14:00 is enforced in manage().
-  entry_cutoff_time: "15:00"
+  entry_cutoff_time: "14:30"
   early_entry_gap_threshold_percent: 0.4
   strike_offset_steps: 1
   # ── Professional profit + quality controls ─────────────────────────────────
@@ -305,8 +305,8 @@ option_filters:
   # Strike selection: target a delta band (works around any IV regime). Falls
   # back to strike_offset_steps if the chain has no Greeks.
   use_delta_targeting: true
-  target_delta_low: 0.65
-  target_delta_high: 0.80
+  target_delta_low: 0.45
+  target_delta_high: 0.60
   # Risk-free rate used in Black-Scholes (India 10-yr ~7%).
   risk_free_rate: 0.07
   # How many strikes each side of ATM to fetch for the snapshot.
