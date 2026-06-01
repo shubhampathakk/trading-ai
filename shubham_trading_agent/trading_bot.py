@@ -225,6 +225,7 @@ class TradingBotOrchestrator:
         # Track whether the bot should fail-stop on the next iteration (e.g. token expiry).
         self._abort = False
         self.trading_allowed_today = True
+        self.daily_losses_count = 0
         
         # Threaded WebSocket Tick Cache variables (Phase 1)
         self.tick_cache = {}             # Local in-memory cache (maps token string -> tick dict)
@@ -1108,9 +1109,10 @@ class TradingBotOrchestrator:
         if datetime.time(9, 15) <= now < datetime.time(9, 30):
             return "Morning Volatility Cool-Down Gate Lockout (09:15 - 09:30 AM)"
 
-        # Rule 2: Daily Circuit Breaker (Max 1 Loss Per Day)
+        # Rule 2: Daily Circuit Breaker (Configurable Max Losses Per Day)
         if not self.trading_allowed_today:
-            return "Daily Stop-Loss Circuit Breaker Active (Max 1 Loss Per Day)"
+            max_losses = int(self.config.get('risk_management', {}).get('max_daily_losses', 1))
+            return f"Daily Stop-Loss Circuit Breaker Active (Max {max_losses} Losses Per Day)"
 
         start = self.effective_entry_start_time or self._parse_hhmm(flags.get('entry_start_time'))
         if start and now < start:
@@ -1350,7 +1352,10 @@ class TradingBotOrchestrator:
                 )
                 self.day_sentiment = self._cached_sentiment
 
-            if self.day_sentiment == "Neutral":
+            # Neutral sentiment only blocks trading if option selling is disabled AND range scalping is disabled.
+            opt_sell_enabled = self.config.get("option_selling", {}).get("enable", False)
+            range_scalp_enabled = self.config.get("range_scalp", {}).get("enable", False)
+            if self.day_sentiment == "Neutral" and not (opt_sell_enabled or range_scalp_enabled):
                 self.no_trade_reason = "Market sentiment is Neutral. No new entries today."
                 return False
 
@@ -2645,11 +2650,6 @@ class TradingBotOrchestrator:
                                         if not is_paper:
                                             await self.position_agent.attach_broker_stop_loss(self.order_agent)
                                         self.trades_today_count += 1
-                                    else:
-                                        self.log_activity(f"❌ Order placement failed or rejected by exchange.")
-                                        # Clear the \r status line before trade logs print.
-                                        if self._is_interactive_tty():
-                                            print(flush=True)
                                         self.bot_state = "IN_POSITION"
                                         self.awaiting_signal_since = None
                                         # Auto-disarm force mode after the first trade.
@@ -2660,6 +2660,16 @@ class TradingBotOrchestrator:
                                                 "trade fired. Normal gating resumes for any "
                                                 "subsequent entries this session."
                                             )
+                                    else:
+                                        self.log_activity(f"❌ Order placement failed or rejected by exchange.")
+                                        # Clear the \r status line before trade logs print.
+                                        if self._is_interactive_tty():
+                                            print(flush=True)
+                                        self.bot_state = "AWAITING_SIGNAL"
+                                        self.awaiting_signal_since = datetime.datetime.now()
+                                        if self._force_mode_armed:
+                                            self._force_mode_armed = False
+                                            logging.warning("FORCE-TRADE MODE disarmed: diagnostic trade attempt failed.")
                         else:
                             logging.warning(f"COUNTER-SIGNAL DETECTED: '{signal}' vs sentiment '{self.day_sentiment}'.")
 

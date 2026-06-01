@@ -488,7 +488,12 @@ async function pollBotStatus() {
         el.agentActiveStrategy.innerText = data.active_strategy.replace(/_/g, " ");
         
         // Render state & mode label
-        el.agentLastUpdatedLabel.innerText = `State: ${data.status} | Mode: ${data.trading_mode} | Sentiment: ${data.day_sentiment} (Synced: ${data.last_updated})`;
+        // Render state & mode label with live Nifty Spot and India VIX radar telemetry!
+        let radarTelemetry = "";
+        if (data.live_spot && data.live_vix) {
+            radarTelemetry = ` | Nifty Spot: ₹${new Intl.NumberFormat('en-IN').format(data.live_spot)} | VIX: ${data.live_vix.toFixed(1)}`;
+        }
+        el.agentLastUpdatedLabel.innerText = `State: ${data.status} | Mode: ${data.trading_mode} | Sentiment: ${data.day_sentiment}${radarTelemetry} (Synced: ${data.last_updated})`;
         
         // If debate logs exist, show button
         if (data.debate_log) {
@@ -503,10 +508,14 @@ async function pollBotStatus() {
         if (data.active_position) {
             const pos = data.active_position;
             el.activeTradeSymbol.innerText = pos.symbol;
-            el.activeTradeType.innerText = pos.type;
             el.activeTradeQty.innerText = pos.quantity;
             el.activeTradeEntry.innerText = formatCurrency(pos.entry_price);
             
+            // --- NEW METRICS ---
+            document.getElementById("active-trade-current").innerText = formatCurrency(pos.current_price);
+            document.getElementById("active-trade-t1").innerText = formatCurrency(pos.t1_target_price);
+            // -------------------
+
             // Render Live P&L
             const livePnl = pos.live_pnl || 0.0;
             el.activeTradePnl.innerText = formatCurrency(livePnl);
@@ -520,7 +529,6 @@ async function pollBotStatus() {
             
             el.activeTradeHardSl.innerText = formatCurrency(pos.initial_stop_loss);
             el.activeTradeTrailSl.innerText = formatCurrency(pos.trailing_stop_loss);
-            el.activeTradeHwm.innerText = formatCurrency(pos.high_water_mark);
             
             el.activeTradeCard.style.display = "flex";
         } else {

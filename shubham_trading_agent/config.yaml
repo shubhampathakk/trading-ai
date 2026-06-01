@@ -66,6 +66,7 @@ risk_management:
   high_vix_risk_reduction_factor: 0.5
   high_vix_threshold: 22.0
   max_daily_loss_percent: 12.0
+  max_daily_losses: 2
   # Consecutive-loss circuit breaker: halt the session after N losing trades
   # in a row without a winning trade in between. A winning trade resets the
   # streak to 0. The breaker is session-scoped (resets on bot restart).
@@ -140,11 +141,11 @@ trading_flags:
   # actually falls inside the RAG recency window. Explicitly large values
   # trigger a warning log.
   stop_loss_percent: 25.0
-  strategy_reassessment_period_minutes: 15
+  strategy_reassessment_period_minutes: 45
   # If a strategy produces 0 non-HOLD signals during its window, it's put in
   # cooldown for this many minutes. Time-based so it can rotate back later
   # as market conditions evolve.
-  strategy_cooldown_minutes: 60
+  strategy_cooldown_minutes: 30
   # When true, every HOLD also logs the specific reason (which condition
   # wasn't met). Useful for diagnosing days where nothing fires.
   log_hold_reasons: true
@@ -160,7 +161,7 @@ trading_flags:
   # Values: 0 (none), 0-100 (custom protection %), -1 (auto protection)
   market_protection: -1
   # 15-minute confirmation gate (see pcr_feed block comment above for details).
-  enable_15m_confirmation: true
+  enable_15m_confirmation: false
   underlying_instrument: NIFTY 50
   use_rag: true
   win_rate_threshold: 55.0
@@ -174,7 +175,7 @@ trading_flags:
   # Hard new-entry cutoff. Professional rule: no new options entries after 13:30.
   # Theta and bid-ask spreads widen in the last 75 min before close.
   # Hard close of any open position at 14:00 is enforced in manage().
-  entry_cutoff_time: "14:30"
+  entry_cutoff_time: "15:00"
   early_entry_gap_threshold_percent: 0.4
   strike_offset_steps: 1
   # ── Professional profit + quality controls ─────────────────────────────────
@@ -234,7 +235,7 @@ mode_switching:
   # --- AGGRESSIVE thresholds ---
   aggressive_trigger_wins: 3     # wins needed in lookback window to go AGGRESSIVE
   aggressive_max_drawdown: 0.05  # max equity drawdown while staying AGGRESSIVE (5%)
-  aggressive_risk_percent: 2.0   # risk_per_trade_percent when AGGRESSIVE (vs 1.0 default)
+  aggressive_risk_percent: 25.0   # risk_per_trade_percent when AGGRESSIVE (vs 1.0 default)
   aggressive_max_trades: 5       # max trades/day in AGGRESSIVE mode (vs 3 in MODERATE)
   aggressive_trail_pct: 20.0     # base trailing-stop % in AGGRESSIVE (vs 15%)
   aggressive_t1_gain_pct: 7.4    # T1 profit target in AGGRESSIVE (100% Exit)
@@ -286,12 +287,12 @@ sentiment_refresh:
 option_filters:
   enable: true
   # Liquidity (gate the chosen strike, not just ATM)
-  max_spread_percent: 2.0
+  max_spread_percent: 3.0
   min_open_interest: 50000
   max_quote_age_seconds: 5
   # IV-Rank: skip new long-premium entries when today's ATM IV is in the top
   # `(100 - ivr_max_for_long)` percent of the recent IV range.
-  ivr_max_for_long: 60
+  ivr_max_for_long: 80
   ivr_lookback_days: 60
   ivr_min_samples: 10        # below this many samples in history, the gate is bypassed
   # IV vs realized vol: skip when implied vastly exceeds realized. Indian
@@ -304,8 +305,8 @@ option_filters:
   # Strike selection: target a delta band (works around any IV regime). Falls
   # back to strike_offset_steps if the chain has no Greeks.
   use_delta_targeting: true
-  target_delta_low: 0.40
-  target_delta_high: 0.55
+  target_delta_low: 0.65
+  target_delta_high: 0.80
   # Risk-free rate used in Black-Scholes (India 10-yr ~7%).
   risk_free_rate: 0.07
   # How many strikes each side of ATM to fetch for the snapshot.

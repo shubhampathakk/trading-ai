@@ -100,12 +100,12 @@ def _detect_indicator_override(df, excluded: Optional[set] = None) -> Optional[T
     return None
 
 
-def _regime_table_pick(market_conditions: set, sentiment: str) -> Optional[str]:
+def _regime_table_pick(market_conditions: set, sentiment: str, option_selling_enabled: bool = False) -> Optional[str]:
     """
     3-D table lookup. Sentiment-family bucketing:
       Bull = {Bullish, Very Bullish}
       Bear = {Bearish, Very Bearish}
-      Neutral handled upstream (no trade today).
+      Neutral = Intraday Option Selling (if enabled) or VWAP Reversion (range scalp)
     Returns the strategy name, or None if conditions don't match any cell.
 
     Regime rationale:
@@ -120,6 +120,11 @@ def _regime_table_pick(market_conditions: set, sentiment: str) -> Optional[str]:
                         Layer-3 indicator override when they actually form.
       VIX_LOW+IV_HIGH — Smart-money footprint or mean-reversion bias.
     """
+    if sentiment == "Neutral":
+        if option_selling_enabled:
+            return "Intraday_Option_Selling"
+        return "VWAP_Reversion"
+
     is_bull = sentiment in ("Bullish", "Very Bullish")
     is_bear = sentiment in ("Bearish", "Very Bearish")
     if not (is_bull or is_bear):
@@ -199,7 +204,8 @@ def pick_strategy_deterministic(
         return (ind_pick[0], f"Indicator override: {ind_pick[1]}")
 
     # ----- Layer 4: regime table -----
-    regime_pick = _regime_table_pick(market_conditions, sentiment)
+    opt_sell_enabled = bool((config or {}).get("option_selling", {}).get("enable", False))
+    regime_pick = _regime_table_pick(market_conditions, sentiment, option_selling_enabled=opt_sell_enabled)
     if regime_pick:
         pick = _take(regime_pick,
                      f"Regime table: VIX/IV/Sentiment match -> "

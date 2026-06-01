@@ -1097,12 +1097,16 @@ class OrderExecutionAgent:
             # Enough time value to survive one adverse bar; enough gamma to
             # profit from a 0.5% underlying move. Fall back to nearest valid
             # expiry if no contract falls in the window (e.g. on expiry week).
-            preferred_dte = [d for d in valid_expiries if 5 <= (d - today).days <= 10]
+            # Alignment check: dynamically expand the preferred DTE window down
+            # to min_days_to_expiry if configured, ensuring we respect the user's
+            # explicit intent to trade nearer expiries.
+            pref_low = min(5, min_dte)
+            preferred_dte = [d for d in valid_expiries if pref_low <= (d - today).days <= 10]
             expiry_date = preferred_dte[0] if preferred_dte else valid_expiries[0]
             logging.info(
                 f"Expiry selected: {expiry_date} "
                 f"({(expiry_date - today).days} DTE"
-                + (" — preferred 5-10 DTE window" if preferred_dte else " — fallback to nearest")
+                + (f" — preferred {pref_low}-10 DTE window" if preferred_dte else " — fallback to nearest")
                 + ")"
             )
 
@@ -1210,8 +1214,14 @@ class OrderExecutionAgent:
 
             max_qty_by_capital = int(capital / max(ref_price, 1e-6))
             if quantity > max_qty_by_capital:
+                if max_qty_by_capital < lot_size:
+                    logging.warning(
+                        f"❌ Sizing: Insufficient capital (₹{capital:.2f}) to afford even a single "
+                        f"lot of {symbol} (estimated cost: ₹{ref_price * lot_size:.2f}). Skipping trade."
+                    )
+                    return None, 0, 0
                 logging.warning(f"Capping qty {quantity} -> {max_qty_by_capital} (capital cap).")
-                quantity = max(lot_size, (max_qty_by_capital // lot_size) * lot_size)
+                quantity = (max_qty_by_capital // lot_size) * lot_size
 
             logging.info(
                 f"Sizing: symbol={symbol} lot={lot_size} qty={quantity} "
@@ -1577,12 +1587,19 @@ class PositionManagementAgent:
             except Exception as e:
                 logging.debug(f"Time-based kill switch check failed: {e}")
 
-        # 3. Hard time exit — never hold options past 14:30 IST.
+        # 3. Hard time exit — never hold options past the entry_cutoff_time.
         #    Theta and bid-ask spread widen sharply in the last 75 min.
-        _hard_close_time = datetime.time(14, 30)
+        cutoff_str = self.flags.get("entry_cutoff_time", "14:30")
+        try:
+            parts = [int(x) for x in cutoff_str.split(":")]
+            _hard_close_time = datetime.time(parts[0], parts[1])
+        except Exception:
+            _hard_close_time = datetime.time(14, 30)
+            cutoff_str = "14:30"
+
         if datetime.datetime.now().time() >= _hard_close_time:
             logging.info(
-                f"Hard time exit: {datetime.datetime.now().strftime('%H:%M')} >= 14:30 — "
+                f"Hard time exit: {datetime.datetime.now().strftime('%H:%M')} >= {cutoff_str} — "
                 f"closing {symbol} to avoid theta/spread damage."
             )
             return await self.exit_trade(
@@ -1665,7 +1682,9 @@ class PositionManagementAgent:
             )
 
         # 9. Indicator-based exit (PSAR / MA on the underlying).
-        if self.tsl_config.get("use_indicator_exit") and underlying_hist_df is not None:
+        # Dynamically bypass indicator exits in range-scalp mode (to avoid instant conflict stop-outs)
+        is_scalp = self.flags.get("_scalp_mode", False)
+        if not is_scalp and self.tsl_config.get("use_indicator_exit") and underlying_hist_df is not None:
             if self._check_indicator_exit(underlying_hist_df):
                 logging.info(f"Indicator exit triggered for {symbol}.")
                 return await self.exit_trade(
@@ -2201,10 +2220,15 @@ class PositionManagementAgent:
             "lot_size": trade.get("lot_size"),
         }
 
-        # Rule 2: Daily Circuit Breaker (Max 1 Loss Per Day)
+        # Rule 2: Daily Circuit Breaker (Configurable Max Losses Per Day)
         if pnl < 0 and "Stop-Loss" in exit_reason and getattr(self, "orchestrator", None) is not None:
-            self.orchestrator.trading_allowed_today = False
-            logging.error("❌ [Daily-SL-Breaker] A trade hit the stop-loss today! Halting all new entries for the remainder of the session.")
+            self.orchestrator.daily_losses_count += 1
+            max_losses = int(self.config.get('risk_management', {}).get('max_daily_losses', 1))
+            if self.orchestrator.daily_losses_count >= max_losses:
+                self.orchestrator.trading_allowed_today = False
+                logging.error(f"❌ [Daily-SL-Breaker] Daily losses ({self.orchestrator.daily_losses_count}) reached limit of {max_losses}! Halting all new entries for the remainder of the session.")
+            else:
+                logging.warning(f"⚠️ [Daily-SL-Breaker] A trade hit the stop-loss today. Daily losses: {self.orchestrator.daily_losses_count}/{max_losses}. New trades are still allowed.")
 
         if pnl < 0 and self.flags.get("enable_gemini_loss_analysis") and gemini_api_key:
             try:

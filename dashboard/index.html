@@ -86,13 +86,13 @@
             <div class="card" id="ai-active-trade-card" style="display: none; margin-bottom: 0.5rem; border: 1px solid var(--emerald); background: HSL(142.1 70.6% 45.3% / 0.02); flex-direction: column; gap: 1rem;">
                 <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
                     <div style="display: flex; align-items: center; gap: 0.75rem;">
-                        <span style="font-size: 1.25rem;">📊</span>
+                        <span style="font-size: 1.25rem;">🎯</span>
                         <div>
                             <div style="font-weight: 600; font-size: 1.1rem; display: flex; align-items: center; gap: 0.5rem;">
                                 Active Trade: <span id="active-trade-symbol" style="color: var(--emerald);">NIFTY...</span>
                             </div>
                             <div style="font-size: 0.8rem; color: var(--text-muted);">
-                                Type: <span id="active-trade-type">BUY</span> | Qty: <span id="active-trade-qty">50</span> | Entry: <span id="active-trade-entry">₹0.00</span>
+                                Qty: <span id="active-trade-qty">50</span> | Entry: <span id="active-trade-entry">₹0.00</span> | Current: <span id="active-trade-current" style="color: white; font-weight: bold;">₹0.00</span>
                             </div>
                         </div>
                     </div>
@@ -101,10 +101,17 @@
                         <div style="font-size: 1.3rem; font-weight: 700;" id="active-trade-pnl" class="gain-text">₹0.00</div>
                     </div>
                 </div>
-                <div style="display: flex; gap: 1.5rem; flex-wrap: wrap; width: 100%; border-top: 1px solid var(--border); padding-top: 0.75rem; font-size: 0.85rem;">
-                    <div>Hard SL: <span id="active-trade-hard-sl" style="color: var(--rose); font-weight: 500;">--</span></div>
-                    <div>Trailing SL: <span id="active-trade-trail-sl" style="color: var(--primary); font-weight: 500;">--</span></div>
-                    <div>High Watermark: <span id="active-trade-hwm" style="color: var(--emerald); font-weight: 500;">--</span></div>
+                
+                <div style="display: flex; justify-content: space-between; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 8px; font-size: 0.85rem; margin-top: 5px;">
+                    <div style="text-align: left;">
+                        <div style="color: var(--text-muted); font-size: 0.7rem; text-transform: uppercase;">Stop Loss (Hard / Trail)</div>
+                        <span id="active-trade-hard-sl" style="color: var(--rose); font-weight: 600;">--</span> / 
+                        <span id="active-trade-trail-sl" style="color: var(--primary); font-weight: 600;">--</span>
+                    </div>
+                    <div style="text-align: right;">
+                        <div style="color: var(--text-muted); font-size: 0.7rem; text-transform: uppercase;">Next Profit Target (T1)</div>
+                        <span id="active-trade-t1" style="color: var(--emerald); font-weight: 600; font-size: 1.1rem;">--</span>
+                    </div>
                 </div>
             </div>
             
