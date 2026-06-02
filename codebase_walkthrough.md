@@ -160,6 +160,13 @@ Multi-leg credit spreads (like Bull Put spreads or Bear Call spreads) must be cl
 *   **Daily Stop-Loss Circuit Breaker**: Halts all trading for the rest of the session immediately if a trade hits the stop-loss, shielding principal cash from consecutive whipsaw drawdowns.
 *   **Morning Volatility lockout gate**: Blocks all trade entries in the first 15 minutes of market open to let morning IV spikes and algorithmic whipsaws settle down.
 
+### 🛡️ 6. Production-Grade Dynamic Safeguards (June 2026 Upgrades)
+*   **Dynamic Position Reconciliation & Safety Bypass**: Engineered inside [`agents.py:L1496-1515`](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent/agents.py#L1496-L1515) and `exit_trade()`. In the event of a failed stop-loss cancel request (e.g., because the operator manually exited or cancelled the order directly in the Zerodha mobile app), the bot immediately verifies the active position size via `self.kite.positions`. If the net quantity is `0`, the bot cleanly reconciles its state to `CLOSED`, logs the trade under exit reason `MANUAL_OR_EXTERNAL_EXIT`, and clears `active_trade.json` without placing redundant Sell orders (averting runaway loops and margin rejections).
+*   **Pandas HTML Daily Report Compatibility Fix**: Patched inside [`reporting.py:L201`](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent/reporting.py#L201) to explicitly cast the daily trade log display dataframe to `object` type prior to running `.fillna('')`. This prevents a type coercion `TypeError` inside pandas 2.0+, ensuring 100% clean shutdowns and successful daily summary email delivery.
+*   **Universal Diagnostic Force-Trade Bypass**: Programmed a dynamic override in [`trading_bot.py:L2523`](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent/trading_bot.py#L2523). When `force_one_trade_today: true` is flipped in `config.yaml`, the bot immediately overrides any active strategy's natural `HOLD` signal to a `BUY` signal on the very first cycle, triggering an immediate trade execution, SL attachment, and trailing stop loop setup across *any* strategy for instant end-to-end testing.
+*   **Live Soft-Lock Lockout Status Indicator**: Integrated in [`trading_bot.py:L1752`](file:///Users/shubhampathakk/Documents/Assets/Trading/shubham_trading_agent/trading_bot.py#L1752). The terminal status bar dynamically polls `_no_trade_window_reason()`. The moment a daily or expiry-day entry cutoff time is reached, the status bar instantly displays `Hold: past entry_cutoff_time [time]` rather than freezing on stale strategy messages.
+
+
 ---
 
 ## 💸 Multi-Leg Option Selling Engine

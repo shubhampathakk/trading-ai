@@ -121,6 +121,13 @@ To ensure the platform is 100% robust, compliant, and safe to trade live on the 
 *   **25-Minute "Dead Trade" Switch**: Exits any long options contract held for more than 25 minutes if the net premium P&L is negative, saving you from silent theta decay during sideways consolidations.
 *   **Daily Circuit Breaker**: Halts all trading for the rest of the session immediately if a trade hits the stop-loss, shielding principal cash from whipsaws.
 
+### 🛡️ 7. Production-Grade Dynamic Safeguards (June 2026 Upgrades)
+*   **Dynamic Position Reconciliation & Safety Bypass**: Added a live positions check inside `manage()` and `exit_trade()`. If a stop-loss cancellation fails or returns `None` (does not exist / already cancelled) because the operator manually closed the trade or cancelled the order directly in the Zerodha mobile/web app, the bot immediately checks `self.kite.positions`. If the net open position is `0`, it cleanly reconciles state, logs the trade under exit reason `MANUAL_OR_EXTERNAL_EXIT`, and clears the active trade state file without placing runaway Sell orders (avoiding `Insufficient funds` rejections).
+*   **Pandas HTML Daily Report Compatibility Fix**: Resolved a type-coercion crash (`LossySetitemError` / `TypeError`) inside `reporting.py` during shutdown daily report HTML summary generation by explicitly casting the trade log display dataframe to `object` type prior to calling `.fillna('')`, guaranteeing clean exits and reliable email report delivery.
+*   **Universal Diagnostic Force-Trade Bypass**: Upgraded the `force_one_trade_today` diagnostic tool. Flipped to `true`, it now instantly overrides any active strategy's natural `HOLD` signal (such as `VWAP_Reversion` or `NR7_Compression`) to a `BUY` signal on the very first cycle, triggering an immediate trade, SL attachment, and trailing stop setup for end-to-end diagnostic verification.
+*   **Live Soft-Lock Lockout Status Indicator**: Patched the terminal status bar to dynamically read `self._no_trade_window_reason()`. When the daily or expiry-day entry cutoff time is reached, it instantly displays `Hold: past entry_cutoff_time [time]` instead of showing stale, frozen strategy messages.
+
+
 ---
 
 ## ⚙️ Environment Variables (`shubham_trading_agent/.env`)
