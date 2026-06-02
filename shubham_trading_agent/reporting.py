@@ -198,6 +198,7 @@ def _generate_summary_table(df, title):
         if col in df_display.columns:
             df_display[col] = df_display[col].apply(lambda x: f'{x:,.2f}' if pd.notna(x) else 'N/A')
     
+    df_display = df_display.astype(object)
     df_display.fillna('', inplace=True)
     trades_html = df_display.to_html(index=False)
     

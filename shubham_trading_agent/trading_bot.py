@@ -146,6 +146,7 @@ class TradingBotOrchestrator:
         self.kite.orchestrator = self
         self.active_strategy_name = "None"
         self.active_strategy = None
+        self._primary_ai_strategy = None
 
         # Initialize core services
         self.rag_service = RAGService(config)
@@ -1046,6 +1047,17 @@ class TradingBotOrchestrator:
         # Also clear the size override set by _enter_range_scalp_mode.
         tf.pop('_effective_risk_pct_multiplier', None)
 
+        # Restore the primary AI-recommended strategy if it was rotated!
+        primary_name = getattr(self, "_primary_ai_strategy", None)
+        if primary_name and primary_name != self.active_strategy_name:
+            from strategy_factory import get_strategy
+            self.active_strategy = get_strategy(primary_name, self.kite, self.config)
+            self.active_strategy_name = primary_name
+            self._signals_seen_for_active_strategy = 0
+            logging.info(
+                f"[RangeScalp] Exited range-scalping. Restoring primary AI recommended strategy: {primary_name}"
+            )
+
     def _time_of_day_size_factor(self) -> float:
         """
         Returns a position-size multiplier based on the current time of day.
@@ -1485,6 +1497,7 @@ class TradingBotOrchestrator:
                 )
             self.active_strategy_name = best_strategy_name
             self.active_strategy = get_strategy(best_strategy_name, self.kite, self.config)
+            self._primary_ai_strategy = best_strategy_name
             
             # 6. Finalize Setup
             initialize_trade_log()
@@ -1736,7 +1749,10 @@ class TradingBotOrchestrator:
             pnl_str  = f"+₹{pnl:,.0f}" if pnl >= 0 else f"-₹{abs(pnl):,.0f}"
             trades   = getattr(self, 'trades_today_count', 0)
             hold_reason = ""
-            if self.active_strategy and getattr(self.active_strategy, '_last_hold_reason', ''):
+            no_trade_win = self._no_trade_window_reason()
+            if no_trade_win:
+                hold_reason = f" │ Hold: {no_trade_win}"
+            elif self.active_strategy and getattr(self.active_strategy, '_last_hold_reason', ''):
                 hold_reason = f" │ {self.active_strategy._last_hold_reason[:60]}"
             line = (
                 f"⏳ {ts}  AWAITING │ {strategy} │ {mode} │ {sent}{dq_part}"
@@ -2638,6 +2654,7 @@ class TradingBotOrchestrator:
                                     )
                                     if trade_details:
                                         trade_details['Strategy'] = self.active_strategy_name
+                                        trade_details['is_reversal_trade'] = getattr(self.active_strategy, 'is_reversal_trade', False)
                                         vix_val = 0.0
                                         try:
                                             _vix_tok = self.market_condition_identifier.vix_token

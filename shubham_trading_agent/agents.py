@@ -1342,19 +1342,51 @@ class PositionManagementAgent:
         self.active_trade['_pe_t2_hit']        = False
         self.active_trade['_pe_realized_pnl']  = 0.0
 
-        # Snapshot the underlying spot price at entry for the give-up rule
-        # (detects IV crush when spot moves in favour but premium stays flat).
+        # Snapshot the underlying spot price at entry for the give-up rule.
+        # Critically: use the exact same signal data token (Futures) that manage()
+        # reads from underlying_hist_df to prevent Index vs Futures price mismatch
+        # and stale REST LTP caching from triggering false [GiveUp] exits.
         try:
-            underlying_name = self.flags.get('underlying_instrument', 'NIFTY 50')
-            nse = get_instruments(self.kite, 'NSE')
-            match = nse[nse['tradingsymbol'] == underlying_name]
-            if not match.empty:
-                token = str(int(match.iloc[0]['instrument_token']))
-                data = self.kite.ltp(token)
-                spot = float((data or {}).get(token, {}).get('last_price', 0))
-                self.active_trade['_entry_spot'] = spot if spot > 0 else 0
-        except Exception:
-            self.active_trade.setdefault('_entry_spot', 0)
+            orchestrator = getattr(self, "orchestrator", None)
+            signal_token = None
+            if orchestrator is not None and hasattr(orchestrator, "order_agent"):
+                signal_token = getattr(orchestrator.order_agent, "signal_data_token", None)
+
+            spot = 0.0
+            if signal_token:
+                # 1. Try WebSocket tick cache first for real-time speed
+                token_str = str(signal_token)
+                tick = orchestrator.tick_cache.get(token_str) if hasattr(orchestrator, "tick_cache") else None
+                if tick and tick.get("ltp"):
+                    spot = float(tick["ltp"])
+                    logging.info(f"start_trade: retrieved spot from websocket tick cache: {spot:.2f}")
+
+                # 2. Fallback to REST LTP of the futures instrument
+                if spot <= 0.0 and hasattr(orchestrator.order_agent, "nfo_instruments"):
+                    nfo = orchestrator.order_agent.nfo_instruments
+                    if nfo is not None and not nfo.empty:
+                        match = nfo[nfo['instrument_token'] == signal_token]
+                        if not match.empty:
+                            symbol = match.iloc[0]['tradingsymbol']
+                            data = self.kite.ltp(f"NFO:{symbol}")
+                            spot = float((data or {}).get(f"NFO:{symbol}", {}).get('last_price', 0))
+                            logging.info(f"start_trade: retrieved spot via REST fallback (NFO:{symbol}): {spot:.2f}")
+
+            # 3. Last resort fallback to NSE:NIFTY 50 index
+            if spot <= 0.0:
+                underlying_name = self.flags.get('underlying_instrument', 'NIFTY 50')
+                nse = get_instruments(self.kite, 'NSE')
+                match = nse[nse['tradingsymbol'] == underlying_name]
+                if not match.empty:
+                    token = str(int(match.iloc[0]['instrument_token']))
+                    data = self.kite.ltp(token)
+                    spot = float((data or {}).get(token, {}).get('last_price', 0))
+                    logging.info(f"start_trade: retrieved spot via Index REST fallback: {spot:.2f}")
+
+            self.active_trade['_entry_spot'] = spot if spot > 0 else 0.0
+        except Exception as e:
+            logging.warning(f"Failed to snapshot entry spot: {e}")
+            self.active_trade.setdefault('_entry_spot', 0.0)
 
         risk_per_share = float(self.active_trade['entry_price']) - sl_price
         target_price = self._calculate_target_price(risk_per_share)
@@ -1464,12 +1496,37 @@ class PositionManagementAgent:
         # 1. Was the broker SL-M already filled? That's our exit.
         sl_id = self.active_trade.get("sl_order_id")
         if not is_paper_trade and sl_id:
-            status = await _order_status(self.api_key, self.access_token, sl_id)
+            try:
+                status = await _order_status(self.api_key, self.access_token, sl_id)
+            except Exception as e:
+                logging.warning(f"Failed to get status for SL order {sl_id}: {e}")
+                status = None
+
             if status == "COMPLETE":
                 logging.info(f"Broker SL-M filled for {symbol}. Recording exit.")
                 return await self._finalize_exit_via_sl(
                     sl_id, underlying_hist_df, sentiment_agent, gemini_api_key
                 )
+            elif status in ("CANCELLED", "REJECTED", None):
+                # Verify if the position itself is already closed on the exchange
+                try:
+                    positions = await asyncio.to_thread(self.kite.positions)
+                    net = positions.get("net", []) if isinstance(positions, dict) else []
+                    match = next((p for p in net if p.get("tradingsymbol") == symbol), None)
+                    net_qty = match.get("quantity", 0) if match else 0
+                    if net_qty == 0:
+                        logging.info(
+                            f"[ManageSafety] Reconciled open trade: {symbol} has 0 open quantity on the exchange "
+                            f"(SL order state: {status}). Clearing state cleanly."
+                        )
+                        current_price = safe_ltp(self.kite, f"NFO:{symbol}") or self.active_trade.get("entry_price", 0)
+                        return await self._book_completed_trade(
+                            current_price, underlying_hist_df, sentiment_agent, gemini_api_key,
+                            exit_order_id=sl_id, exit_reason="MANUAL_OR_EXTERNAL_EXIT"
+                        )
+                except Exception as pos_err:
+                    logging.warning(f"[ManageSafety] Failed to verify broker positions during manage: {pos_err}")
+
             if status == "REJECTED":
                 logging.error(
                     f"Broker SL-M for {symbol} REJECTED mid-session. "
@@ -1603,7 +1660,8 @@ class PositionManagementAgent:
                 f"closing {symbol} to avoid theta/spread damage."
             )
             return await self.exit_trade(
-                is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key
+                is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key,
+                exit_reason="Hard Time Exit"
             )
 
         # 4. Partial exits (T1 / T2 premium targets) — before the SL check so that
@@ -1638,7 +1696,8 @@ class PositionManagementAgent:
                             f"IV crush in progress — exiting."
                         )
                         return await self.exit_trade(
-                            is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key
+                            is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key,
+                            exit_reason="Give-Up (IV Crush)"
                         )
 
         # 6. Tighten trail after 13:30 to protect intraday gains from theta drain.
@@ -1684,11 +1743,13 @@ class PositionManagementAgent:
         # 9. Indicator-based exit (PSAR / MA on the underlying).
         # Dynamically bypass indicator exits in range-scalp mode (to avoid instant conflict stop-outs)
         is_scalp = self.flags.get("_scalp_mode", False)
-        if not is_scalp and self.tsl_config.get("use_indicator_exit") and underlying_hist_df is not None:
+        is_reversal = self.active_trade.get("is_reversal_trade", False)
+        if not is_scalp and not is_reversal and self.tsl_config.get("use_indicator_exit") and underlying_hist_df is not None:
             if self._check_indicator_exit(underlying_hist_df):
                 logging.info(f"Indicator exit triggered for {symbol}.")
                 return await self.exit_trade(
-                    is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key
+                    is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key,
+                    exit_reason="Indicator Exit (PSAR/MA)"
                 )
 
         return "ACTIVE"
@@ -2018,7 +2079,7 @@ class PositionManagementAgent:
             api_url = (
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
                 # f"gemini-3.1-pro-preview:generateContent?key={gemini_api_key}" # Old model setting
-                f"gemini-1.5-flash:generateContent?key={gemini_api_key}" # Original low-latency Flash analyzer model
+                f"gemini-3.5-flash:generateContent?key={gemini_api_key}" # Updated flagship Flash analyzer model
             )
             payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
             timeout = aiohttp.ClientTimeout(total=30)
@@ -2125,6 +2186,25 @@ class PositionManagementAgent:
         exit_order_id = None
 
         if not is_paper_trade:
+            # Live position safety check: verify if the position is already closed on the broker side
+            # (e.g., due to manual exit or external stop-loss execution)
+            try:
+                positions = await asyncio.to_thread(self.kite.positions)
+                net = positions.get("net", []) if isinstance(positions, dict) else []
+                match = next((p for p in net if p.get("tradingsymbol") == symbol), None)
+                net_qty = match.get("quantity", 0) if match else 0
+                if net_qty == 0:
+                    logging.info(
+                        f"[ExitSafety] Reconciled open trade for {symbol}: Net position is 0 on broker side. "
+                        f"Booking as manual/external exit cleanly without placing trade."
+                    )
+                    return await self._book_completed_trade(
+                        long_ltp, underlying_df, sentiment_agent, gemini_api_key,
+                        exit_order_id=trade.get("sl_order_id"), exit_reason="MANUAL_OR_EXTERNAL_EXIT"
+                    )
+            except Exception as pos_err:
+                logging.warning(f"[ExitSafety] Failed to verify broker positions during exit: {pos_err}")
+
             # Cancel any existing SL-M on the long leg first.
             sl_id = trade.get("sl_order_id")
             if sl_id:
