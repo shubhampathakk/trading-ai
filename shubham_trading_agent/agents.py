@@ -1317,6 +1317,87 @@ class PositionManagementAgent:
         self._clear_state()
         return False
 
+    async def reconcile_manual_exit_on_shutdown(self, is_paper_trade=False, underlying_df=None, sentiment_agent=None, gemini_api_key=None):
+        """
+        Checks if the active trade was manually exited on the broker side,
+        and if so, completes the bookkeeping and logs it to Excel.
+        This is called when the bot is shutting down or stopping.
+        """
+        trade = self.active_trade or self.load_state()
+        if not trade:
+            return None
+        
+        symbol = trade.get("symbol")
+        if not symbol:
+            return None
+
+        if is_paper_trade:
+            return None
+        
+        try:
+            positions = await asyncio.to_thread(self.kite.positions)
+            net = positions.get("net", []) if isinstance(positions, dict) else []
+            match = next((p for p in net if p.get("tradingsymbol") == symbol), None)
+            net_qty = match.get("quantity", 0) if match else 0
+            
+            if net_qty == 0:
+                logging.info(f"[ShutdownSafety] Reconciled active trade {symbol}: Net position on exchange is 0 (closed manually). Booking exit...")
+                # Fetch completed orders for this symbol to find the exit price.
+                orders = await asyncio.to_thread(self.kite.orders)
+                exit_type = "SELL" if trade["type"] == "BUY" else "BUY"
+                
+                completed_exits = [
+                    o for o in orders 
+                    if o.get("tradingsymbol") == symbol 
+                    and o.get("transaction_type") == exit_type
+                    and o.get("status") == "COMPLETE"
+                    and (o.get("average_price") or 0) > 0
+                ]
+                
+                exit_price = 0.0
+                exit_order_id = None
+                if completed_exits:
+                    completed_exits.sort(key=lambda x: x.get("order_timestamp", ""), reverse=True)
+                    exit_price = float(completed_exits[0]["average_price"])
+                    exit_order_id = completed_exits[0]["order_id"]
+                    logging.info(f"[ShutdownSafety] Found completed manual exit order {exit_order_id} at avg price {exit_price:.2f}")
+                else:
+                    exit_price = safe_ltp(self.kite, f"NFO:{symbol}") or trade.get("entry_price", 0)
+                    logging.warning(f"[ShutdownSafety] Could not find completed exit order for {symbol}. Falling back to LTP/Entry price: {exit_price:.2f}")
+                
+                if trade.get("is_spread"):
+                    short_sym = trade.get("spread_short_symbol")
+                    short_exit_price = 0.0
+                    if short_sym:
+                        short_exits = [
+                            o for o in orders
+                            if o.get("tradingsymbol") == short_sym
+                            and o.get("transaction_type") == "BUY"
+                            and o.get("status") == "COMPLETE"
+                            and (o.get("average_price") or 0) > 0
+                        ]
+                        if short_exits:
+                            short_exits.sort(key=lambda x: x.get("order_timestamp", ""), reverse=True)
+                            short_exit_price = float(short_exits[0]["average_price"])
+                        else:
+                            short_exit_price = safe_ltp(self.kite, f"NFO:{short_sym}") or 0.0
+                    
+                    exit_price = max(0.0, exit_price - short_exit_price)
+                    logging.info(f"[ShutdownSafety] Spread exit: long={exit_price:.2f} short={short_exit_price:.2f}")
+                
+                status = await self._book_completed_trade(
+                    exit_price, underlying_df, sentiment_agent, gemini_api_key,
+                    exit_order_id=exit_order_id, exit_reason="MANUAL_OR_EXTERNAL_EXIT"
+                )
+                if isinstance(status, dict):
+                    from reporting import log_trade
+                    log_trade(status)
+                    logging.info(f"[ShutdownSafety] Successfully logged manual shutdown exit for {symbol} with P&L ₹{status.get('ProfitLoss', 0.0):+.2f}")
+                    return status
+        except Exception as e:
+            logging.error(f"[ShutdownSafety] Failed to reconcile manual exit on shutdown: {e}", exc_info=True)
+        return None
+
     # ---------- lifecycle ----------
 
     def start_trade(self, trade_details):

@@ -2356,6 +2356,26 @@ class TradingBotOrchestrator:
             _root_logger.removeHandler(_status_handler)
             for h in _orig_handlers:
                 _root_logger.addHandler(h)
+
+            # Reconcile manual exits on shutdown before sending report.
+            try:
+                if self.position_agent:
+                    is_paper = self.config.get("trading_flags", {}).get("paper_trading", True)
+                    hist_df = None
+                    try:
+                        hist_df = await self._get_underlying_bars()
+                    except Exception as bars_err:
+                        logging.debug(f"Could not fetch underlying bars for manual shutdown reconciliation: {bars_err}")
+                    
+                    await self.position_agent.reconcile_manual_exit_on_shutdown(
+                        is_paper_trade=is_paper,
+                        underlying_df=hist_df,
+                        sentiment_agent=self.sentiment_agent,
+                        gemini_api_key=self.config.get("google_api", {}).get("api_key")
+                    )
+            except Exception as shutdown_reconcile_err:
+                logging.error(f"Shutdown manual trade reconciliation failed: {shutdown_reconcile_err}")
+
             # Always send the daily report on exit.
             self._send_shutdown_report_once()
 

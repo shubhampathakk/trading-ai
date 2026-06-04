@@ -214,7 +214,7 @@ partial_exits:
 range_scalp:
   enable: true
   size_factor: 1.0        # position size as a fraction of normal
-  trail_pct: 10.0         # trailing stop % (vs 15% on trending days)
+  trail_pct: 20.0         # trailing stop % (vs 15% on trending days)
   t1_gain_pct: 7.4       # T1 profit target: +7.4% on entry premium (100% Exit)
   t2_gain_pct: 9999.0     # Disabled
 trailing_stop_loss:
