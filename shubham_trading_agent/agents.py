@@ -1697,15 +1697,18 @@ class PositionManagementAgent:
                 is_friday = datetime.datetime.now().weekday() == 4
                 dead_trade_limit = 15.0 if is_friday else 25.0
                 if elapsed_minutes > dead_trade_limit and current_price < self.active_trade.get("entry_price", 0.0):
-                    logging.warning(
-                        f"[DeadTrade-KillSwitch] Position open for {elapsed_minutes:.1f} min (> {dead_trade_limit:.0f}m) "
-                        f"and premium P&L is negative (Current={current_price:.2f} < Entry={self.active_trade['entry_price']:.2f}). "
-                        f"Triggering time-based exit to cut {'Friday ' if is_friday else ''}theta decay drain!"
-                    )
-                    return await self.exit_trade(
-                        is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key,
-                        exit_reason="Friday Time-Based Exit" if is_friday else "Time-Based Dead-Trade Exit"
-                    )
+                    # Only trigger if the market is choppy (ADX < 20). If trending, let it breathe.
+                    current_adx = underlying_hist_df.iloc[-1].get('adx', 0) if not underlying_hist_df.empty else 0
+                    if current_adx < 20:
+                        logging.warning(
+                            f"[DeadTrade-KillSwitch] Position open for {elapsed_minutes:.1f} min (> {dead_trade_limit:.0f}m) "
+                            f"and premium P&L is negative (Current={current_price:.2f} < Entry={self.active_trade['entry_price']:.2f}). "
+                            f"Choppy market (ADX={current_adx:.1f}). Triggering exit to cut {'Friday ' if is_friday else ''}theta decay!"
+                        )
+                        return await self.exit_trade(
+                            is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key,
+                            exit_reason="Friday Time-Based Exit" if is_friday else "Time-Based Dead-Trade Exit"
+                        )
             except Exception as e:
                 logging.debug(f"Time-based kill switch check failed: {e}")
 
@@ -2167,7 +2170,11 @@ class PositionManagementAgent:
                 snapshot = window[cols].to_string() if not window.empty else "N/A"
             else:
                 snapshot = "N/A"
-            news_sentiment = sentiment_agent.get_market_sentiment() if sentiment_agent else "N/A"
+            if sentiment_agent:
+                sentiment_data = sentiment_agent.get_market_sentiment()
+                news_sentiment = sentiment_data.get("direction", "Neutral") if isinstance(sentiment_data, dict) else sentiment_data
+            else:
+                news_sentiment = "N/A"
             rag_context = self.rag_service.retrieve_context_for_loss_analysis(trade_details)
             prompt = (
                 f"Analyze this losing options trade.\n\nTrade: {trade_details}\n\n"

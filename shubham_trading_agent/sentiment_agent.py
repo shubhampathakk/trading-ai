@@ -313,7 +313,7 @@ class SentimentAgent:
             return 0.0, 0
             
         headlines = []
-        for article in top['articles'][:20]:
+        for article in top['articles'][:5]:
             title = article.get('title') or ''
             if not title or title == "[Removed]":
                 continue
@@ -369,8 +369,18 @@ class SentimentAgent:
             logging.info(f"SentimentAgent: Gemini scored news as {direction} (conf: {conf}, final: {final_score})")
             
             try:
+                history = []
+                if os.path.exists(gemini_cache_path):
+                    with open(gemini_cache_path, 'r') as f:
+                        cached = json.load(f)
+                        history = cached.get("history", [])
+                
+                now_ts = time.time()
+                history.append({"ts": now_ts, "score": final_score})
+                history = [h for h in history if now_ts - h["ts"] <= 7200]
+                
                 with open(gemini_cache_path, 'w') as f:
-                    json.dump({"fetchedAt": fetched_at, "score": final_score}, f)
+                    json.dump({"fetchedAt": fetched_at, "score": final_score, "history": history}, f)
             except Exception:
                 pass
                 
@@ -447,12 +457,35 @@ class SentimentAgent:
                 f"final {final_avg:+.3f}"
             )
 
+        direction = "Neutral"
         if final_avg > 0.4:
-            return "Very Bullish"
-        if final_avg > 0.05:
-            return "Bullish"
-        if final_avg < -0.4:
-            return "Very Bearish"
-        if final_avg < -0.05:
-            return "Bearish"
-        return "Neutral"
+            direction = "Very Bullish"
+        elif final_avg > 0.05:
+            direction = "Bullish"
+        elif final_avg < -0.4:
+            direction = "Very Bearish"
+        elif final_avg < -0.05:
+            direction = "Bearish"
+
+        # Calculate Rate of Change (last 30 minutes)
+        roc = 0.0
+        try:
+            gemini_cache_path = os.path.join(self.cache_dir, "gemini_sentiment_cache.json")
+            if os.path.exists(gemini_cache_path):
+                with open(gemini_cache_path, 'r') as f:
+                    cached = json.load(f)
+                    history = cached.get("history", [])
+                    now_ts = time.time()
+                    # Find a point ~30 mins ago (1800s)
+                    past_scores = [h for h in history if now_ts - h["ts"] >= 1500]
+                    if past_scores:
+                        old_score = past_scores[-1]["score"]
+                        roc = final_avg - old_score
+        except Exception:
+            pass
+
+        return {
+            "direction": direction,
+            "score": final_avg,
+            "roc": roc
+        }

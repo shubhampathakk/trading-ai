@@ -100,12 +100,9 @@ def _detect_indicator_override(df, excluded: Optional[set] = None) -> Optional[T
     return None
 
 
-def _regime_table_pick(market_conditions: set, sentiment: str, option_selling_enabled: bool = False) -> Optional[str]:
+def _regime_table_pick(market_conditions: set, option_selling_enabled: bool = False) -> Optional[str]:
     """
-    3-D table lookup. Sentiment-family bucketing:
-      Bull = {Bullish, Very Bullish}
-      Bear = {Bearish, Very Bearish}
-      Neutral = Intraday Option Selling (if enabled) or VWAP Reversion (range scalp)
+    3-D table lookup.
     Returns the strategy name, or None if conditions don't match any cell.
 
     Regime rationale:
@@ -120,16 +117,6 @@ def _regime_table_pick(market_conditions: set, sentiment: str, option_selling_en
                         Layer-3 indicator override when they actually form.
       VIX_LOW+IV_HIGH — Smart-money footprint or mean-reversion bias.
     """
-    if sentiment == "Neutral":
-        if option_selling_enabled:
-            return "Intraday_Option_Selling"
-        return "VWAP_Reversion"
-
-    is_bull = sentiment in ("Bullish", "Very Bullish")
-    is_bear = sentiment in ("Bearish", "Very Bearish")
-    if not (is_bull or is_bear):
-        return None
-
     if "VIX_HIGH" in market_conditions:
         # High VIX → big directional day. Breakout of prev-day levels is
         # far more reliable than waiting for a reversal candle pattern.
@@ -140,26 +127,23 @@ def _regime_table_pick(market_conditions: set, sentiment: str, option_selling_en
     if "VIX_MEDIUM" in market_conditions:
         if not iv_high:
             # IV_LOW + VIX_MEDIUM: trending session with normal vol.
-            # Bullish → ride the trend with EMA momentum.
-            # Bearish → VWAP reversion suits a slow fade better than a
-            #           full breakout strategy; EMA works here too but
-            #           mean-reversion entries tend to be crisper on down days.
-            return "EMA_Cross_RSI" if is_bull else "VWAP_Reversion"
-        return "EMA_Cross_RSI" if is_bull else "Supertrend_MACD"
+            return "VWAP_Reversion"
+        return "Supertrend_MACD"
 
     if "VIX_LOW" in market_conditions:
         if not iv_high:
             # Quiet, slow session — VWAP reversion suits a grind in either
             # direction. BB_Squeeze and NR7 are still reachable via Layer-3.
+            if option_selling_enabled:
+                return "Intraday_Option_Selling"
             return "VWAP_Reversion"
-        return "Volume_Spread_Analysis" if is_bull else "RSI_Divergence"
+        return "RSI_Divergence"
 
     return None
 
 
 def pick_strategy_deterministic(
     market_conditions: set,
-    sentiment: str,
     is_expiry_day: bool = False,
     open_gap_pct: Optional[float] = None,
     underlying_bars=None,
@@ -205,11 +189,11 @@ def pick_strategy_deterministic(
 
     # ----- Layer 4: regime table -----
     opt_sell_enabled = bool((config or {}).get("option_selling", {}).get("enable", False))
-    regime_pick = _regime_table_pick(market_conditions, sentiment, option_selling_enabled=opt_sell_enabled)
+    regime_pick = _regime_table_pick(market_conditions, option_selling_enabled=opt_sell_enabled)
     if regime_pick:
         pick = _take(regime_pick,
-                     f"Regime table: VIX/IV/Sentiment match -> "
-                     f"{sorted(market_conditions)} + {sentiment}")
+                     f"Regime table: VIX/IV match -> "
+                     f"{sorted(market_conditions)}")
         if pick: return pick
 
     # ----- Layer 5: last resort -----
@@ -231,7 +215,7 @@ class LangGraphAgent:
         self.model_name = "gemini-3.5-flash" # Standardized flagship: low-latency + defensive theta GA model
         self.last_debate_text = ""
 
-    def _deterministic_pick(self, market_conditions, sentiment, is_expiry_day,
+    def _deterministic_pick(self, market_conditions, is_expiry_day,
                              open_gap_pct, underlying_bars,
                              exclude_strategies: Optional[set] = None) -> Optional[str]:
         """Wrap pick_strategy_deterministic with consistent logging. Returns
@@ -239,7 +223,6 @@ class LangGraphAgent:
         'strategies exhausted, halt for the day'."""
         result = pick_strategy_deterministic(
             market_conditions=market_conditions,
-            sentiment=sentiment,
             is_expiry_day=is_expiry_day,
             open_gap_pct=open_gap_pct,
             underlying_bars=underlying_bars,
@@ -259,7 +242,6 @@ class LangGraphAgent:
     async def get_recommended_strategy(
         self,
         market_conditions: set,
-        sentiment: str = "Neutral",
         is_expiry_day: bool = False,
         open_gap_pct: Optional[float] = None,
         underlying_bars=None,
@@ -287,7 +269,7 @@ class LangGraphAgent:
 
         if not use_llm or not self.api_key:
             return self._deterministic_pick(
-                market_conditions, sentiment, is_expiry_day,
+                market_conditions, is_expiry_day,
                 open_gap_pct, underlying_bars, exclude_strategies,
             )
 
@@ -301,7 +283,6 @@ class LangGraphAgent:
             "",
             "Your task is to run a collective intelligence debate to select the single best options buying strategy for today based on the latest market data.",
             f"\n**Today's Market Conditions:** {', '.join(market_conditions)}",
-            f"**Market Sentiment Bias:** {sentiment}",
         ]
         
         # Conditionally append Indian Institutional money flows
@@ -325,6 +306,9 @@ class LangGraphAgent:
 
         if user_prompt:
             prompt_sections.append(f"\n**User's Preference/Observation:** '{user_prompt}'")
+            
+        prompt_sections.append("\n**CRITICAL DIRECTIVE:**")
+        prompt_sections.append("- If the current ADX is below 20, the market is structurally chopping in a tight range. In this environment, directional momentum breakouts will fail. You MUST NOT recommend directional/trend strategies (like Momentum_VWAP_RSI or EMA_Cross_RSI). Instead, you MUST recommend mean-reversion strategies (like VWAP_Reversion, Volume_Spread_Analysis) or simply HOLD.")
 
         # Build available strategies dynamically
         strategies_desc = """
@@ -399,7 +383,7 @@ class LangGraphAgent:
                     f"Falling back to deterministic cascade."
                 )
                 return self._deterministic_pick(
-                    market_conditions, sentiment, is_expiry_day,
+                    market_conditions, is_expiry_day,
                     open_gap_pct, underlying_bars, exclude_strategies,
                 )
 
@@ -411,6 +395,6 @@ class LangGraphAgent:
                 f"[Gemini Agent] Error calling Gemini API: {e}. Using deterministic cascade."
             )
             return self._deterministic_pick(
-                market_conditions, sentiment, is_expiry_day,
+                market_conditions, is_expiry_day,
                 open_gap_pct, underlying_bars, exclude_strategies,
             )

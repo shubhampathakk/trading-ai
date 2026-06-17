@@ -714,7 +714,8 @@ class TradingBotOrchestrator:
         # 3. Automated news-sentiment regime flip (BULL <-> BEAR)
         if cfg.get('on_sentiment_flip', True) and self._sentiment_baseline_auto:
             try:
-                new_auto = await asyncio.to_thread(self.sentiment_agent.get_market_sentiment)
+                new_auto_data = await asyncio.to_thread(self.sentiment_agent.get_market_sentiment)
+                new_auto = new_auto_data.get("direction", "Neutral") if isinstance(new_auto_data, dict) else new_auto_data
                 def _regime(s):
                     if s in ('Bullish', 'Very Bullish'): return 'BULL'
                     if s in ('Bearish', 'Very Bearish'): return 'BEAR'
@@ -749,7 +750,8 @@ class TradingBotOrchestrator:
             logging.debug(f"Could not snapshot baseline VIX: {e}")
             self._sentiment_baseline_vix = None
         try:
-            self._sentiment_baseline_auto = await asyncio.to_thread(self.sentiment_agent.get_market_sentiment)
+            auto_data = await asyncio.to_thread(self.sentiment_agent.get_market_sentiment)
+            self._sentiment_baseline_auto = auto_data.get("direction", "Neutral") if isinstance(auto_data, dict) else auto_data
         except Exception as e:
             logging.debug(f"Could not snapshot baseline auto-sentiment: {e}")
             self._sentiment_baseline_auto = None
@@ -1936,11 +1938,21 @@ class TradingBotOrchestrator:
 
         # 2. Automated read.
         try:
-            automated = await asyncio.to_thread(self.sentiment_agent.get_market_sentiment, force_refresh=force_refresh)
+            automated_data = await asyncio.to_thread(self.sentiment_agent.get_market_sentiment, force_refresh=force_refresh)
+            if isinstance(automated_data, dict):
+                automated = automated_data.get("direction", "Neutral")
+                self.sentiment_score = automated_data.get("score", 0.0)
+                self.sentiment_roc = automated_data.get("roc", 0.0)
+            else:
+                automated = automated_data
+                self.sentiment_score = 0.0
+                self.sentiment_roc = 0.0
         except Exception as e:
             logging.warning(f"Automated sentiment failed ({e}); defaulting to 'Neutral'.")
             automated = "Neutral"
-        logging.info(f"Automated sentiment read: {automated}")
+            self.sentiment_score = 0.0
+            self.sentiment_roc = 0.0
+        logging.info(f"Automated sentiment read: {automated} (Score: {getattr(self, 'sentiment_score', 0.0):.2f}, ROC: {getattr(self, 'sentiment_roc', 0.0):.2f})")
 
         manual_enabled = self.config['trading_flags'].get('manual_sentiment_override', True)
         if not manual_enabled:
@@ -2483,18 +2495,7 @@ class TradingBotOrchestrator:
                     # frozen on the same strategy until kill.
                     reassessment_period = self.config['trading_flags'].get('strategy_reassessment_period_minutes', 60)
                     if self.awaiting_signal_since and (datetime.datetime.now() - self.awaiting_signal_since).total_seconds() > reassessment_period * 60:
-                        # Cool down the current strategy if it produced zero
-                        # non-HOLD signals during this window — re-picking the
-                        # same strategy is wasteful. Time-based cooldown so it
-                        # can come back later as market conditions evolve.
-                        if (self.active_strategy_name
-                                and self._signals_seen_for_active_strategy == 0
-                                and self.active_strategy_name not in self._strategy_cooldown_until):
-                            logging.info(
-                                f"'{self.active_strategy_name}' produced 0 non-HOLD "
-                                f"signals in {reassessment_period} min."
-                            )
-                            self._cool_strategy(self.active_strategy_name)
+                        # Cooldown kill-switch removed: patient strategies should not be punished.
                         logging.warning(f"No trade signal for over {reassessment_period} minutes. Re-assessing strategy...")
                         if not await self.setup():
                             self.bot_state = "STOPPED"; continue
@@ -2632,15 +2633,26 @@ class TradingBotOrchestrator:
                                     f"PCR contradicts trade direction — skipping entry."
                                 )
                                 self.log_activity(f"Entry signal '{signal}' BLOCKED by PCR gate (PCR={f'{pcr_val:.2f}' if pcr_val is not None else 'N/A'}).")
-                            # Trap detection — skip false breakout/breakdown entries.
                             elif not force_mode_now and self._is_false_breakout(signal, day_df_for_signal):
                                 self.log_activity(f"Entry signal '{signal}' BLOCKED by Whipsaw Trap detection.")
+                            elif not force_mode_now and signal == "BUY" and getattr(self, 'sentiment_score', 0.0) < -0.2:
+                                logging.warning(f"Sentiment score {self.sentiment_score:.2f} < -0.2. Blocking LONG entry.")
+                                self.log_activity(f"Entry signal '{signal}' BLOCKED by Sentiment Score ({self.sentiment_score:.2f} < -0.2).")
+                            elif not force_mode_now and signal == "BUY" and getattr(self, 'sentiment_score', 0.0) > 0.2 and getattr(self, 'sentiment_roc', 0.0) <= 0.0:
+                                logging.warning(f"Sentiment is Bullish but ROC is stagnant/falling ({self.sentiment_roc:.2f}). Blocking LONG entry (Rate of Change Filter).")
+                                self.log_activity(f"Entry signal '{signal}' BLOCKED by Sentiment ROC Filter (Absolute score high, but ROC is {self.sentiment_roc:.2f}).")
                             else:
                                 # Inject professional size multiplier so the order
                                 # agent applies progressive loss sizing + time-of-day
                                 # weighting when computing quantity.
                                 tod_factor = self._time_of_day_size_factor()
                                 effective_multiplier = self._trade_size_multiplier * tod_factor
+                                
+                                if not force_mode_now and getattr(self, 'sentiment_score', 0.0) > 0.6:
+                                    logging.info(f"[ProSize] Sentiment Hype detected (Score: {self.sentiment_score:.2f} > 0.6). Reducing position size by 50%.")
+                                    self.log_activity(f"⚠️ Excessive Hype Detected (Score: {self.sentiment_score:.2f} > 0.6). Reducing trade size by 50%.")
+                                    effective_multiplier *= 0.5
+                                    
                                 self.config['_effective_risk_pct_multiplier'] = effective_multiplier
                                 if effective_multiplier < 1.0:
                                     logging.info(
