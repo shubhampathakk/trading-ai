@@ -73,6 +73,49 @@ class BaseStrategy:
     def _is_vix_low(self, kwargs: dict) -> bool:
         return 'VIX_LOW' in (kwargs.get('vix_conditions') or set())
 
+    def _is_volume_expanding(self, day_df, index, multiplier=1.2):
+        """Projects live volume to a 5-minute equivalent to avoid blocking trades early in a candle."""
+        if index < 1: return False
+        completed_bar = day_df.iloc[index - 1]
+        live_bar = day_df.iloc[index]
+        
+        # 1. If the previous closed bar already confirmed the volume spike, accept it
+        if completed_bar.get('volume', 0) > (completed_bar.get('volume_ma', 1) * multiplier):
+            return True
+            
+        # 2. Check if the bar is historical or live
+        import datetime
+        now = datetime.datetime.now()
+        
+        # If the bar's timestamp is > 10 mins old, it is fully closed (e.g. backtest or late historical data)
+        # So we just use its raw volume instead of projecting.
+        bar_time = live_bar.name
+        is_historical = False
+        if isinstance(bar_time, datetime.datetime) or hasattr(bar_time, 'timestamp'):
+            try:
+                # Pandas Timestamp or datetime
+                age_seconds = (now - pd.to_datetime(bar_time)).total_seconds()
+                if age_seconds > 600:
+                    is_historical = True
+            except Exception:
+                pass
+
+        if is_historical:
+            if live_bar.get('volume', 0) > (live_bar.get('volume_ma', 1) * multiplier):
+                return True
+            return False
+
+        # 3. Project current live bar volume based on elapsed seconds
+        seconds_elapsed = (now.minute % 5) * 60 + now.second
+        
+        # Wait at least 15 seconds into the new candle for stability
+        if seconds_elapsed > 15:
+            projected_vol = live_bar.get('volume', 0) * (300.0 / seconds_elapsed)
+            if projected_vol > (live_bar.get('volume_ma', 1) * multiplier):
+                return True
+                
+        return False
+
 class Gemini_Default_Strategy(BaseStrategy):
     """The original Gemini strategy based on CPR, EMA, and RSI."""
     def __init__(self, kite, config):
@@ -154,9 +197,9 @@ class Supertrend_MACD_Strategy(BaseStrategy):
             return 'HOLD'
 
         if 'supertrend_direction' not in day_df.columns:
-            supertrend = ta.supertrend(day_df['high'], day_df['low'], day_df['close'])
+            supertrend = ta.supertrend(day_df['high'], day_df['low'], day_df['close'], length=10, multiplier=3)
             if supertrend is not None and not supertrend.empty:
-                day_df['supertrend_direction'] = supertrend.get('SUPERTd_7_3.0')
+                day_df['supertrend_direction'] = supertrend.get('SUPERTd_10_3.0')
         if 'macd' not in day_df.columns:
             macd = ta.macd(day_df['close'])
             if macd is not None and not macd.empty:
@@ -283,7 +326,7 @@ class VSA_Strategy(BaseStrategy):
         last_candle = day_df.iloc[index - 1]
         spread_ma = day_df['spread'].rolling(window=20).mean().iloc[index - 1]
 
-        is_high_volume = last_candle.get('volume', 0) > (last_candle.get('volume_ma', 0) * 1.3)
+        is_high_volume = last_candle.get('volume', 0) > (last_candle.get('volume_ma', 0) * 1.2)
         is_wide_spread = last_candle.get('spread', 0) > spread_ma
 
         if sentiment in ['Bullish', 'Very Bullish']:
@@ -295,7 +338,7 @@ class VSA_Strategy(BaseStrategy):
             self._log_hold(
                 f"need down_bar AND high_vol AND wide_spread AND high_close. "
                 f"down_bar={is_down_bar}, high_vol={is_high_volume} "
-                f"(vol={last_candle.get('volume',0):.0f} vs 1.3x_ma={last_candle.get('volume_ma',0)*1.3:.0f}), "
+                f"(vol={last_candle.get('volume',0):.0f} vs 1.2x_ma={last_candle.get('volume_ma',0)*1.2:.0f}), "
                 f"wide_spread={is_wide_spread} (spread={last_candle.get('spread',0):.2f} vs ma={spread_ma:.2f}), "
                 f"high_close={is_high_close}"
             )
@@ -308,7 +351,7 @@ class VSA_Strategy(BaseStrategy):
             self._log_hold(
                 f"need up_bar AND high_vol AND wide_spread AND low_close. "
                 f"up_bar={is_up_bar}, high_vol={is_high_volume} "
-                f"(vol={last_candle.get('volume',0):.0f} vs 1.3x_ma={last_candle.get('volume_ma',0)*1.3:.0f}), "
+                f"(vol={last_candle.get('volume',0):.0f} vs 1.2x_ma={last_candle.get('volume_ma',0)*1.2:.0f}), "
                 f"wide_spread={is_wide_spread} (spread={last_candle.get('spread',0):.2f} vs ma={spread_ma:.2f}), "
                 f"low_close={is_low_close}"
             )
@@ -340,29 +383,31 @@ class Momentum_VWAP_RSI_Strategy(BaseStrategy):
         vwap = current.get('vwap', float('nan'))
         rsi = current.get('rsi', float('nan'))
 
-        if sentiment in ['Bullish', 'Very Bullish'] and close > vwap and rsi > 55:
+        vol_ok = self._is_volume_expanding(day_df, index, 1.2)
+
+        if sentiment in ['Bullish', 'Very Bullish'] and close > vwap and 55 < rsi <= 75 and vol_ok:
             return 'BUY'
-        if sentiment in ['Bearish', 'Very Bearish'] and close < vwap and rsi < 45:
+        if sentiment in ['Bearish', 'Very Bearish'] and close < vwap and 25 <= rsi < 45 and vol_ok:
             return 'SELL'
 
         if sentiment in ['Bullish', 'Very Bullish']:
             self._log_hold(
-                f"need close>vwap AND rsi>55. got close={close:.2f}, vwap={vwap:.2f} "
-                f"({'above' if close > vwap else 'below'}), rsi={rsi:.1f}"
+                f"need close>vwap AND 55<rsi<=75 AND vol_ok. got close={close:.2f}, vwap={vwap:.2f} "
+                f"({'above' if close > vwap else 'below'}), rsi={rsi:.1f}, vol_ok={vol_ok}"
             )
         else:
             self._log_hold(
-                f"need close<vwap AND rsi<45. got close={close:.2f}, vwap={vwap:.2f} "
-                f"({'above' if close > vwap else 'below'}), rsi={rsi:.1f}"
+                f"need close<vwap AND 25<=rsi<45 AND vol_ok. got close={close:.2f}, vwap={vwap:.2f} "
+                f"({'above' if close > vwap else 'below'}), rsi={rsi:.1f}, vol_ok={vol_ok}"
             )
         return 'HOLD'
 
     def get_status_message(self, day_df, sentiment, **kwargs):
         vwap = day_df.iloc[-1].get('vwap', 0)
         if sentiment in ['Bullish', 'Very Bullish']:
-            return f"Awaiting BUY signal: Price needs to be above VWAP ({vwap:.2f}) with RSI > 55."
+            return f"Awaiting BUY signal: Price needs to be above VWAP ({vwap:.2f}) with 55 < RSI <= 75 and expanding volume."
         else:
-            return f"Awaiting SELL signal: Price needs to be below VWAP ({vwap:.2f}) with RSI < 45."
+            return f"Awaiting SELL signal: Price needs to be below VWAP ({vwap:.2f}) with 25 <= RSI < 45 and expanding volume."
 
 class Breakout_Prev_Day_HL_Strategy(BaseStrategy):
     def __init__(self, kite, config): super().__init__(kite, config); self.name = "Breakout_Prev_Day_HL"
@@ -381,7 +426,7 @@ class Breakout_Prev_Day_HL_Strategy(BaseStrategy):
         close = current.get('close', float('nan'))
         vol = current.get('volume', 0)
         vol_ma = current.get('volume_ma', 0)
-        vol_ok = vol > (vol_ma * 1.2) if vol_ma else False
+        vol_ok = self._is_volume_expanding(day_df, index, 1.2)
 
         if sentiment in ['Bullish', 'Very Bullish'] and last['close'] < pdh and close > pdh and vol_ok:
             return 'BUY'
@@ -431,16 +476,24 @@ class Opening_Range_Breakout_Strategy(BaseStrategy):
 
         orb_minutes = self.config['trading_flags'].get('orb_minutes', 30)
 
+        # 1. Reset ORB state if a new day starts
+        today_date = day_df.index[-1].date()
+        if getattr(self, 'orb_date', None) != today_date:
+            self.orb_date = today_date
+            self.orb_period_set = False
+            self.orb_high = self.orb_low = None
+
         current_time = day_df.index[index].time()
         market_open_time = datetime.time(9, 15)
         orb_end_time = (datetime.datetime.combine(datetime.date.today(), market_open_time) + datetime.timedelta(minutes=orb_minutes)).time()
         
         if not self.orb_period_set and current_time >= orb_end_time:
-            # FIX: Filter to today's date ONLY, then get the time window
-            today_date = day_df.index[-1].date()
             today_df = day_df[day_df.index.date == today_date]
             
-            orb_df = today_df.between_time(market_open_time.strftime("%H:%M"), orb_end_time.strftime("%H:%M"))
+            # 2. Add inclusive="left" to prevent pulling in the 09:45-09:50 candle
+            orb_df = today_df.between_time(market_open_time.strftime("%H:%M"), 
+                                           orb_end_time.strftime("%H:%M"), 
+                                           inclusive="left")
             if not orb_df.empty:
                 self.orb_high, self.orb_low = orb_df['high'].max(), orb_df['low'].min()
                 self.orb_period_set = True
@@ -460,7 +513,7 @@ class Opening_Range_Breakout_Strategy(BaseStrategy):
 
         vol = current.get('volume', 0)
         vol_ma = current.get('volume_ma', 0)
-        vol_ok = vol > (vol_ma * 1.5)
+        vol_ok = self._is_volume_expanding(day_df, index, 1.5)
 
         if sentiment in ['Bullish', 'Very Bullish']:
             if last['close'] < self.orb_high and current['close'] > self.orb_high and vol_ok:
@@ -693,14 +746,15 @@ class EMACrossRSIStrategy(BaseStrategy):
         if 'rsi' not in day_df.columns: day_df['rsi'] = calculate_rsi(day_df['close'], 14)
 
         current_candle = day_df.iloc[index]
+        completed_candle = day_df.iloc[index - 1]
         close   = current_candle.get('close', float('nan'))
         ema_50  = current_candle.get('ema_50', float('nan'))
 
         # --- MODIFIED BULLISH (BUY) SIGNAL LOGIC ---
-        # 1. Check current state: 9-EMA is above 15-EMA now.
-        is_trending_up = current_candle['ema_9'] > current_candle['ema_15']
-        # 2. Check confirmation conditions: RSI and price are favorable now.
-        is_confirmed_up = current_candle['rsi'] > 50 and current_candle['close'] > current_candle['ema_9']
+        # Trend state relies on the CLOSED candle so it cannot repaint/fakeout
+        is_trending_up = completed_candle['ema_9'] > completed_candle['ema_15']
+        # Live price breaking above confirms the entry
+        is_confirmed_up = 50 < completed_candle['rsi'] <= 75 and current_candle['close'] > completed_candle['ema_9']
 
         if is_trending_up and is_confirmed_up:
             # 2b. 50-EMA alignment: only trade with the macro trend.
@@ -730,9 +784,9 @@ class EMACrossRSIStrategy(BaseStrategy):
 
         # --- MODIFIED BEARISH (SELL) SIGNAL LOGIC ---
         # 1. Check current state: 9-EMA is below 15-EMA now.
-        is_trending_down = current_candle['ema_9'] < current_candle['ema_15']
-        # 2. Check confirmation conditions: RSI and price are favorable now.
-        is_confirmed_down = current_candle['rsi'] < 50 and current_candle['close'] < current_candle['ema_9']
+        is_trending_down = completed_candle['ema_9'] < completed_candle['ema_15']
+        # Live price breaking below confirms the entry
+        is_confirmed_down = 25 <= completed_candle['rsi'] < 50 and current_candle['close'] < completed_candle['ema_9']
 
         if is_trending_down and is_confirmed_down:
             # 2b. 50-EMA alignment: only trade with the macro trend.
@@ -785,9 +839,9 @@ class EMACrossRSIStrategy(BaseStrategy):
 
     def get_status_message(self, day_df, sentiment, **kwargs):
         if sentiment in ['Bullish', 'Very Bullish']:
-            return f"Awaiting BUY signal: 9/15 EMA golden cross (close above EMA50), RSI > 50."
+            return f"Awaiting BUY signal: 9/15 EMA golden cross (close above EMA50), 50 < RSI <= 75."
         else:
-            return f"Awaiting SELL signal: 9/15 EMA death cross (close below EMA50), RSI < 50."
+            return f"Awaiting SELL signal: 9/15 EMA death cross (close below EMA50), 25 <= RSI < 50."
 
 
 class Reversal_Detector_Strategy(BaseStrategy):
@@ -810,10 +864,10 @@ class Reversal_Detector_Strategy(BaseStrategy):
         rsi = day_df['rsi'].iloc[-1]
         
         # Check for overextended uptrend 
-        if (current_price / min_price - 1) > 0.015 and rsi > 70:
+        if (current_price / min_price - 1) > 0.005 and rsi > 70:
             return "Uptrend"
         # Check for overextended downtrend 
-        if (max_price / current_price - 1) > 0.015 and rsi < 30:
+        if (max_price / current_price - 1) > 0.005 and rsi < 30:
             return "Downtrend"
             
         return "None"
@@ -921,20 +975,24 @@ class VWAP_Reversion_Strategy(BaseStrategy):
         cur_close, cur_vwap, cur_rsi = current['close'], current['vwap'], current['rsi']
         prev_close, prev_vwap = prev['close'], prev['vwap']
 
-        # Bullish reclaim: prior bar at/under VWAP, current bar closes above it.
-        # Dynamic Support Test (Option C): Trigger if previous candle closed below, OR if previous/current low dipped below/near VWAP support
-        reclaimed = (prev_close <= prev_vwap or prev['low'] <= prev_vwap * 1.0005 or current['low'] <= cur_vwap * 1.0005) and (cur_close > cur_vwap)
-        momentum_ok_buy = cur_rsi > 45
-        if reclaimed and momentum_ok_buy:
-            logging.info(f"[{self.name}] BUY: VWAP Support Test/Reclaim with RSI {cur_rsi:.1f} > 45.")
+        # Bullish reclaim: prior close strictly below VWAP, current close strictly above it.
+        reclaimed = (prev_close < prev_vwap) and (cur_close > cur_vwap)
+        
+        # Loss Lesson Enforcement: Avoid long trades in neutral RSI (45-55). Require oversold (< 40) bounce or high momentum (> 60).
+        momentum_ok_buy = (cur_rsi < 40) or (cur_rsi > 60)
+        
+        # Use the new projection helper!
+        volume_ok = self._is_volume_expanding(day_df, index, 1.1)
+        
+        if reclaimed and momentum_ok_buy and volume_ok:
+            logging.info(f"[{self.name}] BUY: Clean VWAP Reclaim with RSI {cur_rsi:.1f} and active volume.")
             return 'BUY'
 
-        # Bearish loss: prior bar at/above VWAP, current bar closes below it.
-        # Dynamic Resistance Test (Option C): Trigger if previous close was above, OR if previous/current high tested resistance above/near VWAP
-        lost = (prev_close >= prev_vwap or prev['high'] >= prev_vwap * 0.9995 or current['high'] >= cur_vwap * 0.9995) and (cur_close < cur_vwap)
-        momentum_ok_sell = cur_rsi < 55
-        if lost and momentum_ok_sell:
-            logging.info(f"[{self.name}] SELL: VWAP Resistance Test/Loss with RSI {cur_rsi:.1f} < 55.")
+        # Bearish loss: prior close strictly above VWAP, current close strictly below it.
+        lost = (prev_close > prev_vwap) and (cur_close < cur_vwap)
+        momentum_ok_sell = (cur_rsi > 60) or (cur_rsi < 40)
+        if lost and momentum_ok_sell and volume_ok:
+            logging.info(f"[{self.name}] SELL: Clean VWAP Loss with RSI {cur_rsi:.1f} and active volume.")
             return 'SELL'
 
         # If neither triggers, log the hold state metrics:
@@ -1014,40 +1072,44 @@ class NR7_Compression_Breakout_Strategy(BaseStrategy):
         if pd.isna(cur_vol_ma) or cur_vol_ma <= 0:
             self._log_hold("volume_ma is NaN/zero")
             return 'HOLD'
-        volume_confirm = cur_vol > (cur_vol_ma * 1.2)
+        nr7_high, nr7_low = nr7_bar['high'], nr7_bar['low']
+        
+        # 1. Check if price has broken out FIRST
+        is_breakout_up = sentiment in ['Bullish', 'Very Bullish'] and cur_close > nr7_high
+        is_breakdown_down = sentiment in ['Bearish', 'Very Bearish'] and cur_close < nr7_low
+        
+        if not (is_breakout_up or is_breakdown_down):
+            if sentiment in ['Bullish', 'Very Bullish']:
+                self._log_hold(f"NR7 fresh but close {cur_close:.2f} <= NR7 high {nr7_high:.2f} (awaiting breakout)")
+            elif sentiment in ['Bearish', 'Very Bearish']:
+                self._log_hold(f"NR7 fresh but close {cur_close:.2f} >= NR7 low {nr7_low:.2f} (awaiting breakdown)")
+            else:
+                self._log_hold(f"sentiment {sentiment!r} is Neutral — no directional check")
+            return 'HOLD'
+
+        # 2. If price broke out, THEN check volume
+        volume_confirm = self._is_volume_expanding(day_df, index, 1.2)
         if not volume_confirm:
             self._log_hold(
-                f"NR7 fresh ({bars_since_nr7} bars ago) but volume not confirming: "
-                f"vol={cur_vol:.0f} <= 1.2*MA={1.2 * cur_vol_ma:.0f}"
+                f"NR7 fresh ({bars_since_nr7} bars ago) AND price broke out, "
+                f"but volume not confirming: vol={cur_vol:.0f} <= 1.2*MA={1.2 * cur_vol_ma:.0f}"
             )
             return 'HOLD'
 
-        nr7_high, nr7_low = nr7_bar['high'], nr7_bar['low']
-        if sentiment in ['Bullish', 'Very Bullish'] and cur_close > nr7_high:
+        if is_breakout_up:
             logging.info(
                 f"[{self.name}] BUY: close {cur_close:.2f} > NR7 high "
                 f"{nr7_high:.2f} on volume {cur_vol:.0f} vs MA {cur_vol_ma:.0f}."
             )
             return 'BUY'
-        if sentiment in ['Bearish', 'Very Bearish'] and cur_close < nr7_low:
+        
+        if is_breakdown_down:
             logging.info(
                 f"[{self.name}] SELL: close {cur_close:.2f} < NR7 low "
                 f"{nr7_low:.2f} on volume {cur_vol:.0f} vs MA {cur_vol_ma:.0f}."
             )
             return 'SELL'
 
-        if sentiment in ['Bullish', 'Very Bullish']:
-            self._log_hold(
-                f"NR7 fresh + volume OK, but close {cur_close:.2f} <= NR7 high "
-                f"{nr7_high:.2f} (need breakout above the NR7 bar's high)"
-            )
-        elif sentiment in ['Bearish', 'Very Bearish']:
-            self._log_hold(
-                f"NR7 fresh + volume OK, but close {cur_close:.2f} >= NR7 low "
-                f"{nr7_low:.2f} (need breakdown below the NR7 bar's low)"
-            )
-        else:
-            self._log_hold(f"sentiment {sentiment!r} is Neutral — no directional check")
         return 'HOLD'
 
     def get_status_message(self, day_df, sentiment, **kwargs):

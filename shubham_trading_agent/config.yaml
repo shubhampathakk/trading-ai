@@ -41,7 +41,7 @@ youtube_api:
 # strip sponsor segments via SponsorBlock, ask Gemini for a structured
 # directional verdict, blend with the news-based score.
 youtube_sentiment:
-  enable: false
+  enable: true
   max_video_age_hours: 18
   transcript_max_chars: 8000
   strip_categories:               # SponsorBlock categories to strip
@@ -53,11 +53,11 @@ youtube_sentiment:
   # gemini_model: ggemini-3.1-pro-preview # Old flagship model setting
   gemini_model: gemini-3.5-flash # Standardized: low-latency + defensive theta-selling GA model
   channels:
-    - handle: "@shubham"
-      display_name: "Shubham Pathak"
+    - handle: "@PowerOfStocks"
+      display_name: "Power of Stocks"
       weight: 10
-    - handle: "@shubham"
-      display_name: "Learning Markets with Shubham"
+    - handle: "@BoomingBulls"
+      display_name: "Booming Bulls"
       weight: 10
 risk_management:
   atr_multiplier: 2.0
@@ -168,7 +168,7 @@ trading_flags:
   min_stop_loss_points: 7.0
   risk_reward_ratio: 0.32
   min_days_to_expiry: 2
-  limit_order_slippage_percent: 0.5
+  limit_order_slippage_percent: 1.0
   operator_input_timeout_seconds: 20
   pre_market_start_time: "08:50"
   entry_start_time: "09:30"
@@ -200,10 +200,10 @@ trading_flags:
 # Partial exits are SKIPPED if fewer than 2 lots are held (can't split).
 partial_exits:
   enable: true
-  t1_gain_pct: 7.4          # +7.4% on entry premium → T1 exit (100% Exit)
-  t2_gain_pct: 9999.0        # Disabled
-  t1_exit_pct: 100          # Exit 100% of the position at T1!
-  t2_exit_pct: 0            # Disabled
+  t1_gain_pct: 15.0          # Book a solid 15% return when momentum spikes
+  t2_gain_pct: 30.0          # Target a massive 40% run for the remaining position
+  t1_exit_pct: 50            # Sell exactly half your lots at T1 (Auto-shifts SL to breakeven!)
+  t2_exit_pct: 50            # Sell the remaining half at the macro target
   # Runner (remaining 20%) trail: tightened automatically by _dynamic_trail_pct
   # 0→T1: base trail %, T1→T2: 8%, T2+: 5%, after 13:30: forced to 5%
 # Range-day scalping. On RANGE days (ADX < 20, low open range) the bot rotates
@@ -215,8 +215,8 @@ range_scalp:
   enable: true
   size_factor: 1.0        # position size as a fraction of normal
   trail_pct: 20.0         # trailing stop % (vs 15% on trending days)
-  t1_gain_pct: 7.4       # T1 profit target: +7.4% on entry premium (100% Exit)
-  t2_gain_pct: 9999.0     # Disabled
+  t1_gain_pct: 12         # T1 profit target: +12% on entry premium (100% Exit)
+  t2_gain_pct: 25         # Disabled
 trailing_stop_loss:
   indicator_exit_type: PSAR
   ma_period: 9
@@ -273,7 +273,7 @@ expiry_day_overrides:
   enable: true
   risk_reduction_factor: 0.5      # halve risk per trade
   max_trades: 2                   # at most one trade on expiry day
-  entry_cutoff_time: "13:30"      # tighter than the regular 14:30 cutoff
+  entry_cutoff_time: "14:30"      # tighter than the regular 14:30 cutoff
 # Sentiment-refresh policy: capture sentiment + NL-prompt ONCE at startup,
 # reuse on every strategy reassessment unless the market has materially shifted.
 sentiment_refresh:

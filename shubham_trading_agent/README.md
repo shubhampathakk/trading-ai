@@ -23,6 +23,13 @@ The system has been upgraded with a institutional-grade **Multi-Leg Option Selli
 
 ---
 
+## Recent System Tweaks & Fixes
+*   **Choppy State Tolerance (`trading_bot.py`)**: Adjusted the `DayQuality` algorithm to increase the `direction_changes` threshold from `7` to `12`. This prevents the bot from prematurely locking into a strict `CHOPPY` state during normal market noise, allowing primary trend strategies more room to operate.
+*   **Volume Spread Analysis Tuning (`strategy_factory.py`)**: Lowered the `Volume_Spread_Analysis` high-volume requirement multiplier from `1.3x` to `1.2x` of the moving average. This balances trade frequency while effectively filtering out retail noise.
+*   **Persistent Daily Logging (`trading_bot.py`)**: Added a robust `logging.FileHandler` that permanently saves daily terminal outputs into timestamped `.log` files (e.g., `output/logs/bot_YYYY-MM-DD.log`). Trade records, AI Post-Mortem analyses, and execution ticks are now preserved even if the terminal is closed or suspended.
+
+---
+
 ## Key Features
 *   **Automated F&O Trading**: Fully automates the process of analyzing market data, generating trade signals, and executing F&O (Futures & Options) orders via the Zerodha Kite Connect API.
 *   **Multi-Strategy Framework**: Comes with a library of over 15+ pre-built trading strategies, from classic trend-following (Supertrend, MACD) to advanced reversal, volatility-based, and multi-leg credit spread strategies.

@@ -23,7 +23,7 @@ import os
 import time
 
 from newsapi import NewsApiClient
-from textblob import TextBlob
+# from textblob import TextBlob # Removed in favor of Gemini API
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +75,9 @@ STRONG_ANCHORS = sorted(set([
 # match, we additionally require a FINANCIAL_CONTEXT keyword in the same article.
 WEAK_ANCHORS = sorted(set([
     "indian", "india", "mumbai", "tata", "bajaj", "mahindra",
-] + _CONSTITUENT_FRAGMENTS))
+    "reliance", "infosys", "wipro", "tcs", "hdfc", "icici", 
+    "sbi", "kotak", "adani", "cipla", "maruti", "eicher", "ntpc", "ongc"
+]))
 
 # Financial-context keywords. Disambiguates weak anchors like "Tata" from a
 # personal surname to "Tata Motors / Tata Group". Article must contain at least
@@ -195,6 +197,7 @@ class SentimentAgent:
             kwargs['domains'] = domains
         try:
             resp = self.newsapi.get_everything(**kwargs)
+            logging.info(f"DEBUG NewsAPI: status={resp.get('status')}, total={resp.get('totalResults')}")
         except Exception as e:
             logging.error(f"SentimentAgent: NewsAPI call failed (domains={bool(domains)}): {e}")
             return []
@@ -202,7 +205,7 @@ class SentimentAgent:
 
     # ---------- cache + main fetch ----------
 
-    def _get_news_articles(self):
+    def _get_news_articles(self, force_refresh=False):
         """
         Returns a dict with key 'articles' containing post-filtered relevant
         articles. Cached to disk for 1 hour to avoid hammering NewsAPI.
@@ -212,7 +215,7 @@ class SentimentAgent:
         cache_path = os.path.join(self.cache_dir, f"news_{today.isoformat()}.json")
         CACHE_EXPIRATION_SECONDS = 3600
 
-        if (os.path.exists(cache_path)
+        if not force_refresh and (os.path.exists(cache_path)
                 and (time.time() - os.path.getmtime(cache_path)) < CACHE_EXPIRATION_SECONDS):
             try:
                 with open(cache_path, 'r') as f:
@@ -288,10 +291,8 @@ class SentimentAgent:
                 continue
             description = a.get('description') or ''
             content = f"{title}. {description}".strip()
-            try:
-                polarity = float(TextBlob(content).sentiment.polarity)
-            except Exception:
-                polarity = 0.0
+            from textblob import TextBlob
+            polarity = TextBlob(content).sentiment.polarity
             out.append({
                 "title": title,
                 "source": (a.get('source') or {}).get('name', ''),
@@ -302,30 +303,81 @@ class SentimentAgent:
                 break
         return out
 
-    def _news_weighted_average(self):
+    def _news_weighted_average(self, force_refresh=False):
         """
         Internal: returns (avg, sample_count) for the news polarity score,
-        using the same linear-decay weighting (newest articles count most).
+        using Gemini to accurately assess financial sentiment instead of TextBlob.
         """
-        top = self._get_news_articles()
+        top = self._get_news_articles(force_refresh=force_refresh)
         if not top or not top.get('articles'):
             return 0.0, 0
-        scores = []
-        for article in top['articles']:
+            
+        headlines = []
+        for article in top['articles'][:20]:
             title = article.get('title') or ''
             if not title or title == "[Removed]":
                 continue
-            content = f"{title}. {article.get('description', '')}"
-            try:
-                scores.append(float(TextBlob(content).sentiment.polarity))
-            except Exception:
-                continue
-        if not scores:
+            headlines.append(f"{title}. {article.get('description', '')}")
+            
+        if not headlines:
             return 0.0, 0
-        n = len(scores)
-        weighted_sum = sum(score * (n - i) for i, score in enumerate(scores))
-        total_weight = sum(range(1, n + 1))
-        return (weighted_sum / total_weight if total_weight else 0.0), n
+
+        # Use fetchedAt to cache Gemini verdict (sync with news fetch)
+        fetched_at = top.get('fetchedAt', 'unknown')
+        gemini_cache_path = os.path.join(self.cache_dir, "gemini_sentiment_cache.json")
+        try:
+            if os.path.exists(gemini_cache_path):
+                with open(gemini_cache_path, 'r') as f:
+                    cached = json.load(f)
+                if cached.get("fetchedAt") == fetched_at:
+                    return cached.get("score", 0.0), len(headlines)
+        except Exception:
+            pass
+
+        gemini_api_key = self.config.get('google_api', {}).get('api_key', '')
+        if not gemini_api_key:
+            logging.warning("SentimentAgent: No Gemini API key, returning 0.0")
+            return 0.0, len(headlines)
+
+        prompt = "You are a financial analyst analyzing recent news for the Indian stock market (NIFTY 50).\n"
+        prompt += "Note: The NIFTY 50 is market-cap weighted. Give significantly higher importance to news concerning Reliance, HDFC Bank, ICICI Bank, Infosys, ITC, and TCS. A strongly negative headline for HDFC Bank or Reliance outweighs positive headlines for smaller constituents.\n"
+        prompt += "Evaluate the overall directional sentiment of these headlines.\n"
+        prompt += "Return STRICT JSON ONLY:\n"
+        prompt += "{\n  \"direction\": \"Very Bullish\" | \"Bullish\" | \"Neutral\" | \"Bearish\" | \"Very Bearish\",\n  \"confidence\": <float 0.0 to 1.0>\n}\n\nHeadlines:\n"
+        for i, h in enumerate(headlines):
+            prompt += f"{i+1}. {h}\n"
+
+        import requests
+        gemini_model = self.config.get('youtube_sentiment', {}).get('gemini_model', 'gemini-3.5-flash')
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={gemini_api_key}"
+        try:
+            resp = requests.post(url, json={
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {"response_mime_type": "application/json", "temperature": 0.1}
+            }, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
+            import re
+            raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            clean_text = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_text, flags=re.MULTILINE).strip()
+            verdict = json.loads(clean_text)
+            direction = verdict.get("direction", "Neutral")
+            conf = float(verdict.get("confidence", 0.0) or 0.0)
+            score_map = {"Very Bullish": 0.7, "Bullish": 0.3, "Neutral": 0.0, "Bearish": -0.3, "Very Bearish": -0.7}
+            base = score_map.get(direction, 0.0)
+            final_score = base * max(0.0, min(1.0, conf))
+            logging.info(f"SentimentAgent: Gemini scored news as {direction} (conf: {conf}, final: {final_score})")
+            
+            try:
+                with open(gemini_cache_path, 'w') as f:
+                    json.dump({"fetchedAt": fetched_at, "score": final_score}, f)
+            except Exception:
+                pass
+                
+            return final_score, len(headlines)
+        except Exception as e:
+            logging.error(f"SentimentAgent: Gemini scoring failed: {e}")
+            return 0.0, len(headlines)
 
     def _youtube_weighted_average(self):
         """
@@ -351,7 +403,7 @@ class SentimentAgent:
             total_weight += weight
         return (weighted_sum / total_weight if total_weight else 0.0), len(verdicts)
 
-    def get_market_sentiment(self):
+    def get_market_sentiment(self, force_refresh=False):
         """
         Combined weighted sentiment from news + YouTube analyst verdicts.
         News and YouTube each produce their own weighted-average; the two
@@ -360,7 +412,7 @@ class SentimentAgent:
 
         Returns one of: Very Bullish / Bullish / Neutral / Bearish / Very Bearish.
         """
-        news_avg, news_n = self._news_weighted_average()
+        news_avg, news_n = self._news_weighted_average(force_refresh=force_refresh)
         yt_avg, yt_n = self._youtube_weighted_average()
 
         if news_n == 0 and yt_n == 0:
@@ -381,8 +433,13 @@ class SentimentAgent:
                 f"SentimentAgent: YouTube-only avg = {final_avg:+.3f} (over {yt_n} verdicts)."
             )
         else:
-            news_w, yt_w = 1.0, yt_overall_weight
-            final_avg = (news_w * news_avg + yt_w * yt_avg) / (news_w + yt_w)
+            dynamic_news_w = 1.0 * min(news_n / 10.0, 1.0)
+            dynamic_yt_w = yt_overall_weight * min(yt_n / 3.0, 1.0)
+            total_weight = dynamic_news_w + dynamic_yt_w
+            if total_weight > 0:
+                final_avg = (dynamic_news_w * news_avg + dynamic_yt_w * yt_avg) / total_weight
+            else:
+                final_avg = 0.0
             logging.info(
                 f"SentimentAgent: combined sentiment - "
                 f"news avg {news_avg:+.3f} (n={news_n}) | "

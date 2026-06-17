@@ -11,7 +11,7 @@ import pandas as pd
 _INDICATOR_COLS_TO_FFILL = (
     "rsi", "ema_9", "ema_15", "ema_20", "ema_21", "ema_50",
     "supertrend_direction", "macd", "macd_signal",
-    "atr", "atr_ma", "spread", "volume_ma",
+    "atr", "atr_ma", "spread", "volume_ma", "adx",
     "vwap",
     "bb_upper", "bb_lower", "bb_mid", "bb_bandwidth", "bb_bandwidth_ma",
     "psar_long", "psar_short",
@@ -102,6 +102,10 @@ def calculate_all_indicators(df: pd.DataFrame, config: dict):
         df['macd_signal'] = macd['MACDs_12_26_9']
 
     # Volatility & VSA Strategy Indicators
+    adx_df = ta.adx(df['high'], df['low'], df['close'], length=14)
+    if adx_df is not None and not adx_df.empty:
+        df['adx'] = adx_df['ADX_14']
+
     df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14)
     df['atr_ma'] = _safe_rolling_mean(df['atr'], window=20)
     df['spread'] = df['high'] - df['low']

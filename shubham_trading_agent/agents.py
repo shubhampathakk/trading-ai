@@ -288,28 +288,11 @@ async def _place_entry_with_retry(
             )
             return "PARTIAL", partial_avg, partial_qty, order_id
 
-    # All LIMIT attempts failed — last resort: MARKET.
+    # All LIMIT attempts failed — last resort: Abort to protect from slippage.
     logging.warning(
         f"[FillRetry] All {total_tries} LIMIT attempts exhausted for "
-        f"{base_params.get('tradingsymbol')}; placing MARKET order."
+        f"{base_params.get('tradingsymbol')}; ABORTING entry instead of using dangerous MARKET order."
     )
-    mkt_ltp = safe_ltp(kite, ltp_key)
-    if mkt_ltp and mkt_ltp > 0:
-        mkt_params = dict(base_params)
-        mkt_params.pop("price", None)
-        mkt_params["order_type"] = "MARKET"
-        mkt_params["market_protection"] = market_protection
-        mkt_id = await asyncio.to_thread(
-            _execute_order_sync, api_key, access_token, mkt_params
-        )
-        if mkt_id:
-            s, avg, qty = await _wait_for_fill(
-                api_key, access_token, mkt_id, 30
-            )
-            if s == "COMPLETE" and avg > 0:
-                logging.info(f"[FillRetry] MARKET fallback filled: avg={avg:.2f}")
-                return s, avg, qty, mkt_id
-
     return "FAILED", 0.0, 0, None
 
 
@@ -1409,6 +1392,7 @@ class PositionManagementAgent:
         self.active_trade["initial_stop_loss"] = sl_price
         self.active_trade["trailing_stop_loss"] = sl_price
         self.active_trade["high_water_mark"] = self.active_trade.get("entry_price", 0)
+        self.active_trade["low_water_mark"] = self.active_trade.get("entry_price", 0)
         self.active_trade.setdefault("sl_order_id", None)
 
         # Partial-exit state — enabled only when at least 2 lots are held so we can
@@ -1785,11 +1769,11 @@ class PositionManagementAgent:
         _late_tighten_time = datetime.time(13, 30)
         if datetime.datetime.now().time() >= _late_tighten_time:
             current_trail_pct = float(self.tsl_config.get("percentage", 15.0))
-            if current_trail_pct > 5.0:
+            if current_trail_pct > 10.0:
                 self.tsl_config = dict(self.tsl_config)
-                self.tsl_config["percentage"] = 5.0
+                self.tsl_config["percentage"] = 10.0
                 logging.info(
-                    "[TrailTighten] 13:30 reached — tightening trail to 5% "
+                    "[TrailTighten] 13:30 reached — tightening trail to 10% "
                     "to lock intraday gains before theta accelerates."
                 )
 
@@ -1799,9 +1783,16 @@ class PositionManagementAgent:
             await self._maybe_modify_broker_sl(new_trail)
 
         # 7.5 Ultimate Profit Target Check (automatic fixed profit exit)
-        risk_per_share = float(self.active_trade['entry_price']) - float(self.active_trade['initial_stop_loss'])
+        if self.active_trade.get("type") == "SELL":
+            risk_per_share = float(self.active_trade['initial_stop_loss']) - float(self.active_trade['entry_price'])
+        else:
+            risk_per_share = float(self.active_trade['entry_price']) - float(self.active_trade['initial_stop_loss'])
+            
         target_price = self._calculate_target_price(risk_per_share)
-        if current_price >= target_price:
+        
+        target_hit = current_price <= target_price if self.active_trade.get("type") == "SELL" else current_price >= target_price
+        
+        if target_hit:
             logging.info(
                 f"🏆 Ultimate Profit Target reached for {symbol} @ {current_price:.2f} "
                 f"(Target={target_price:.2f}). Triggering automatic exit!"
@@ -1814,7 +1805,10 @@ class PositionManagementAgent:
         # 8. Software backstop: if no broker SL or it's stale, enforce in code.
         trail = self.active_trade.get("trailing_stop_loss")
         hard = self.active_trade["initial_stop_loss"]
-        if current_price <= hard or (trail and current_price <= trail):
+        
+        sl_hit = current_price >= hard or (trail and current_price >= trail) if self.active_trade.get("type") == "SELL" else current_price <= hard or (trail and current_price <= trail)
+        
+        if sl_hit:
             logging.info(f"Software SL hit for {symbol} @ {current_price:.2f}.")
             return await self.exit_trade(
                 is_paper_trade, underlying_hist_df, sentiment_agent, gemini_api_key,
@@ -1875,7 +1869,10 @@ class PositionManagementAgent:
         entry = float(self.active_trade.get('entry_price', 0) or 0)
         if entry <= 0:
             return base_pct
-        gain_pct = (current_price - entry) / entry
+        if self.active_trade.get("type") == "SELL":
+            gain_pct = (entry - current_price) / entry
+        else:
+            gain_pct = (current_price - entry) / entry
 
         if gain_pct >= t2_gain:
             return 5.0
@@ -1887,20 +1884,37 @@ class PositionManagementAgent:
         prev_trail = self.active_trade.get(
             "trailing_stop_loss", self.active_trade.get("initial_stop_loss", 0)
         )
-        self.active_trade["high_water_mark"] = max(
-            self.active_trade.get("high_water_mark", 0), current_price
-        )
+        is_sell = self.active_trade.get("type") == "SELL"
+        
+        if is_sell:
+            self.active_trade["low_water_mark"] = min(
+                self.active_trade.get("low_water_mark", current_price), current_price
+            )
+        else:
+            self.active_trade["high_water_mark"] = max(
+                self.active_trade.get("high_water_mark", 0), current_price
+            )
+            
         trail_type = self.tsl_config.get("type", "NONE")
         if trail_type != "PERCENTAGE":
             return None
         # Use dynamic (profit-level-based) trail % instead of fixed %.
         pct = self._dynamic_trail_pct(current_price)
-        candidate = self.active_trade["high_water_mark"] * (1 - pct / 100.0)
-        new_trail = max(prev_trail or 0, candidate)
-        if new_trail > (prev_trail or 0):
-            self.active_trade["trailing_stop_loss"] = new_trail
-            self._save_state()
-            return new_trail
+        
+        if is_sell:
+            candidate = self.active_trade["low_water_mark"] * (1 + pct / 100.0)
+            new_trail = min(prev_trail or float('inf'), candidate)
+            if prev_trail == 0 or new_trail < prev_trail:
+                self.active_trade["trailing_stop_loss"] = new_trail
+                self._save_state()
+                return new_trail
+        else:
+            candidate = self.active_trade["high_water_mark"] * (1 - pct / 100.0)
+            new_trail = max(prev_trail or 0, candidate)
+            if new_trail > (prev_trail or 0):
+                self.active_trade["trailing_stop_loss"] = new_trail
+                self._save_state()
+                return new_trail
         return None
 
     def _check_indicator_exit(self, df):
@@ -2009,7 +2023,7 @@ class PositionManagementAgent:
                 logging.error("❌ PARTIAL EXIT FAILED: Could not execute broker order sync.")
                 return 0.0
 
-        partial_pnl = (exit_price - trade['entry_price']) * qty_to_exit
+        partial_pnl = ((trade['entry_price'] - exit_price) if trade.get("type") == "SELL" else (exit_price - trade['entry_price'])) * qty_to_exit
         trade['_pe_realized_pnl'] = float(trade.get('_pe_realized_pnl', 0.0)) + partial_pnl
         trade['quantity'] = int(trade['quantity']) - qty_to_exit
         logging.info(
@@ -2070,8 +2084,12 @@ class PositionManagementAgent:
                     trade['_pe_t1_hit'] = True
                     # Slide SL to breakeven — protect the trade after first win.
                     be = entry
-                    trade['trailing_stop_loss'] = max(float(trade.get('trailing_stop_loss', 0)), be)
-                    trade['initial_stop_loss']  = max(float(trade['initial_stop_loss']), be)
+                    if trade.get("type") == "SELL":
+                        trade['trailing_stop_loss'] = min(float(trade.get('trailing_stop_loss', float('inf'))), be)
+                        trade['initial_stop_loss']  = min(float(trade['initial_stop_loss']), be)
+                    else:
+                        trade['trailing_stop_loss'] = max(float(trade.get('trailing_stop_loss', 0)), be)
+                        trade['initial_stop_loss']  = max(float(trade['initial_stop_loss']), be)
                     logging.info(
                         f"T1 target hit @ {current_price:.2f} (+{t1_pct*100:.0f}%). "
                         f"SL moved to breakeven ₹{be:.2f}."
@@ -2358,7 +2376,7 @@ class PositionManagementAgent:
                                     gemini_api_key, exit_order_id=None, exit_reason="UNKNOWN"):
         trade = self.active_trade
         # Remaining-lots P&L + any partial-exit P&L already banked at T1/T2.
-        remaining_pnl = (exit_price - trade["entry_price"]) * trade["quantity"] if exit_price > 0 else 0.0
+        remaining_pnl = ((trade["entry_price"] - exit_price) if trade.get("type") == "SELL" else (exit_price - trade["entry_price"])) * trade["quantity"] if exit_price > 0 else 0.0
         pnl = remaining_pnl + float(trade.get('_pe_realized_pnl', 0.0))
         completed = {
             "Timestamp": datetime.datetime.now(),
@@ -2444,6 +2462,8 @@ class PositionManagementAgent:
         sl_pct = sl_pct * vix_scale
         min_pts = float(self.flags.get("min_stop_loss_points", 2.0))
         risk_per_share = max(entry_price * (sl_pct / 100.0), min_pts)
+        if self.active_trade.get("type") == "SELL":
+            return entry_price + risk_per_share, risk_per_share
         return entry_price - risk_per_share, risk_per_share
 
     def _calculate_target_price(self, risk_per_share):
@@ -2451,4 +2471,6 @@ class PositionManagementAgent:
         if entry_price == 0:
             return 0
         rr = float(self.flags.get("risk_reward_ratio", 2.0))
+        if self.active_trade.get("type") == "SELL":
+            return entry_price - (risk_per_share * rr)
         return entry_price + (risk_per_share * rr)

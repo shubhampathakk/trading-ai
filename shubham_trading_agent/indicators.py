@@ -68,8 +68,10 @@ def check_cpr_breakout(current_candle, cpr_pivots, last_candle):
     price = current_candle['close']; last_price = last_candle['close']
     tc = cpr_pivots['tc']; bc = cpr_pivots['bc']
 
-    if price > tc and last_price > tc: return "Bullish"
-    if price < bc and last_price < bc: return "Bearish"
+    # FIX: Must cross from BELOW to ABOVE
+    if last_price <= tc and price > tc: return "Bullish"
+    # FIX: Must cross from ABOVE to BELOW
+    if last_price >= bc and price < bc: return "Bearish"
     return "None"
 
 def lex_algo_supply_demand(df):

@@ -66,7 +66,17 @@ warnings.filterwarnings(
 )
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+os.makedirs("output/logs", exist_ok=True)
+log_filename = f"output/logs/bot_{datetime.datetime.now().strftime('%Y-%m-%d')}.log"
+
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_filename),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
@@ -704,7 +714,7 @@ class TradingBotOrchestrator:
         # 3. Automated news-sentiment regime flip (BULL <-> BEAR)
         if cfg.get('on_sentiment_flip', True) and self._sentiment_baseline_auto:
             try:
-                new_auto = self.sentiment_agent.get_market_sentiment()
+                new_auto = await asyncio.to_thread(self.sentiment_agent.get_market_sentiment)
                 def _regime(s):
                     if s in ('Bullish', 'Very Bullish'): return 'BULL'
                     if s in ('Bearish', 'Very Bearish'): return 'BEAR'
@@ -739,7 +749,7 @@ class TradingBotOrchestrator:
             logging.debug(f"Could not snapshot baseline VIX: {e}")
             self._sentiment_baseline_vix = None
         try:
-            self._sentiment_baseline_auto = self.sentiment_agent.get_market_sentiment()
+            self._sentiment_baseline_auto = await asyncio.to_thread(self.sentiment_agent.get_market_sentiment)
         except Exception as e:
             logging.debug(f"Could not snapshot baseline auto-sentiment: {e}")
             self._sentiment_baseline_auto = None
@@ -903,7 +913,7 @@ class TradingBotOrchestrator:
             )
 
             # Classification
-            if direction_changes >= 7:
+            if direction_changes >= 12:
                 quality = 'CHOPPY'
             elif adx > 25 and first_30_range_pct > 0.3:
                 quality = 'TRENDING'
@@ -1354,7 +1364,7 @@ class TradingBotOrchestrator:
                         print("  Please reconfirm market sentiment.")
                         print("!" * 78)
 
-                self.day_sentiment = await self._resolve_sentiment()
+                self.day_sentiment = await self._resolve_sentiment(force_refresh=(self._cached_sentiment is not None))
                 self._cached_sentiment = self.day_sentiment
                 await self._snapshot_sentiment_context()
             else:
@@ -1899,7 +1909,7 @@ class TradingBotOrchestrator:
         except Exception as e:
             logging.error(f"Loss-analysis email failed: {e}", exc_info=True)
 
-    async def _resolve_sentiment(self):
+    async def _resolve_sentiment(self, force_refresh=False):
         """
         Compute today's sentiment via a hybrid flow:
 
@@ -1926,7 +1936,7 @@ class TradingBotOrchestrator:
 
         # 2. Automated read.
         try:
-            automated = self.sentiment_agent.get_market_sentiment()
+            automated = await asyncio.to_thread(self.sentiment_agent.get_market_sentiment, force_refresh=force_refresh)
         except Exception as e:
             logging.warning(f"Automated sentiment failed ({e}); defaulting to 'Neutral'.")
             automated = "Neutral"
